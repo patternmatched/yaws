@@ -836,6 +836,8 @@ url_decode_q_split([], Ack) ->
 
 
 
+url_encode([H|T]) when is_list(H) ->
+    [url_encode(H) | url_encode(T)];
 url_encode([H|T]) ->
     if
         H >= $a, $z >= H ->
