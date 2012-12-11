@@ -55,7 +55,7 @@ start(Arg, CallbackMod, Opts) ->
     PrepdOpts = preprocess_opts(Opts),
 
     %% Check origin header
-    {origin, OriginOpt} = lists:keyfind(origin, 1, Opts),
+    {origin, OriginOpt} = lists:keyfind(origin, 1, PrepdOpts),
     Origin = get_origin_header(Arg#arg.headers),
     case check_origin(Origin, OriginOpt) of
         ok ->
