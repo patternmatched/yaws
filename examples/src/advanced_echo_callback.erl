@@ -97,14 +97,16 @@ handle_message(#ws_frame_info{opcode=pong}, State) ->
 %% MAY be injected in the middle of a fragmented message, which is
 %% why we pass FragType and FragAcc along below. Whether any clients
 %% actually do this in practice, I don't know.
-handle_message(#ws_frame_info{opcode=close, length=Len, data=Data}, _State) ->
+handle_message(#ws_frame_info{opcode=close, length=Len,
+                              data=Data, ws_state=WSState},
+               _State) ->
     Reason = case Len of
                  0  -> {1000, <<>>};
                   1 -> {1002, <<"protocol error">>};
                   _ ->
                       <<Status:16/big, Msg/binary>> = Data,
                       case unicode:characters_to_binary(Msg, utf8, utf8) of
-                          Msg -> {Status, Msg};
+                          Msg -> {check_close_code(Status, WSState), Msg};
                           _   -> {1007, <<"invalid utf-8">>}
                       end
               end,
@@ -113,8 +115,27 @@ handle_message(#ws_frame_info{opcode=close, length=Len, data=Data}, _State) ->
 
 handle_message(#ws_frame_info{}=FrameInfo, State) ->
     io:format("WS Endpoint Unhandled message: ~p~n~p~n", [FrameInfo, State]),
-    {error, {1002, <<"protocol error">>}};
+    {close, {1002, <<"protocol error">>}};
 
 handle_message({fail_connection, Status, Msg}, State) ->
     io:format("Connection failure: ~p:~p~n~p~n", [Status, Msg, State]),
-    {error, {Status, Msg}}.
+    {close, {Status, Msg}}.
+
+
+%% The checks for close status codes here are based on RFC 6455 and on the
+%% autobahn testsuite (http://autobahn.ws/testsuite).
+check_close_code(Code, WSState) ->
+    if
+        Code >= 3000 andalso Code =< 4999 ->
+            Code;
+        Code < 1000 ->
+            1002;
+        Code == 1006 andalso WSState#ws_state.sock == undefined ->
+            Code;
+        Code >= 1004 andalso Code =< 1006 ->
+            1002;
+        Code > 1011 ->
+            1002;
+        true ->
+            Code
+    end.

@@ -576,7 +576,9 @@ handle_message(#ws_frame_info{opcode=pong}, Acc) ->
 %% injected in the middle of a fragmented message, which is why we pass FragType
 %% and FragAcc along below. Whether any clients actually do this in practice, I
 %% don't know.
-handle_message(#ws_frame_info{opcode=close, length=Len, data=Data}, _Acc) ->
+handle_message(#ws_frame_info{opcode=close, length=Len,
+                              data=Data, ws_state=WSState},
+               _Acc) ->
     Message = case Len of
                   0 -> {close, ?WS_STATUS_NORMAL, <<>>};
                   1 -> {close, ?WS_STATUS_PROTO_ERROR, <<"protocol error">>};
@@ -584,7 +586,7 @@ handle_message(#ws_frame_info{opcode=close, length=Len, data=Data}, _Acc) ->
                       <<Status:16/big, Msg/binary>> = Data,
                       case unicode:characters_to_binary(Msg, utf8, utf8) of
                           Msg ->
-                              {close, check_close_code(Status), Msg};
+                              {close, check_close_code(Status, WSState), Msg};
                           _ ->
                               {close, ?WS_STATUS_INVALID_PAYLOAD,
                                <<"invalid utf-8">>}
@@ -619,13 +621,15 @@ advanced_messages([FrameInfo|Rest],
 
 %% The checks for close status codes here are based on RFC 6455 and on the
 %% autobahn testsuite (http://autobahn.ws/testsuite).
-check_close_code(Code) ->
+check_close_code(Code, WSState) ->
     if
         Code >= 3000 andalso Code =< 4999 ->
             Code;
         Code < 1000 ->
             ?WS_STATUS_PROTO_ERROR;
-        Code >= 1004 andalso Code =< 1005 ->
+        Code == 1006 andalso WSState#ws_state.sock == undefined ->
+            Code;
+        Code >= 1004 andalso Code =< 1006 ->
             ?WS_STATUS_PROTO_ERROR;
         Code > 1011 ->
             ?WS_STATUS_PROTO_ERROR;

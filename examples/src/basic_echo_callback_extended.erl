@@ -63,7 +63,7 @@ handle_message({text, Msg}, #state{nb_texts=N}=State) ->
 
 handle_message({binary, Msg}, #state{nb_bins=M}=State) ->
     io:format("Receive binary message (M=~p): ~p bytes~n", [M, byte_size(Msg)]),
-    {reply, {text, Msg}, State#state{nb_bins=M+1}};
+    {reply, {binary, Msg}, State#state{nb_bins=M+1}};
 
 handle_message(timeout, State) ->
     io:format("process timed out~n", []),
