@@ -117,9 +117,9 @@ send(Pid, #ws_frame{}=Frame) ->
 init([Arg, CbMod, Opts]) ->
     {CbType, FrameState, InitState} =
         case lists:keyfind(callback, 1, Opts) of
-            {basic,    St} -> {basic, {none, <<>>}, St};
-            {advanced, St} -> {advanced, undefined, St};
-            _              -> {basic, {none, <<>>}, []}
+            {callback, {basic,    St}} -> {basic, {none, <<>>}, St};
+            {callback, {advanced, St}} -> {advanced, undefined, St};
+            _                          -> {basic, {none, <<>>}, []}
         end,
     case get_callback_info(CbMod) of
         {ok, #cbinfo{init_fun=undefined}=CbInfo} ->
