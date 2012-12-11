@@ -103,8 +103,12 @@ start(Arg, CallbackMod, Opts) ->
 
 send(#ws_state{}=WSState, {Type, Data}) ->
     do_send(WSState, {Type, Data});
+send(#ws_state{}=WSState, #ws_frame{}=Frame) ->
+    do_send(WSState, Frame);
 send(Pid, {Type, Data}) ->
-    gen_server:cast(Pid, {send, {Type, Data}}).
+    gen_server:cast(Pid, {send, {Type, Data}});
+send(Pid, #ws_frame{}=Frame) ->
+    gen_server:cast(Pid, {send, Frame}).
 
 
 %%%----------------------------------------------------------------------
@@ -199,6 +203,9 @@ handle_cast({stop, Reason}, State) ->
 handle_cast({send, {Type, Data}}, #state{wsstate=WSState}=State) ->
     do_send(WSState, {Type, Data}),
     {noreply, State, State#state.timeout};
+handle_cast({send, #ws_frame{}=Frame}, #state{wsstate=WSState}=State) ->
+    do_send(WSState, Frame),
+    {noreply, State, State#state.timeout};
 
 %% Skip all other async messages
 handle_cast(_Msg, State) ->
@@ -239,6 +246,7 @@ handle_info({tcp_closed, Socket},
                                     masking_key = 0,
                                     length      = 2,
                                     payload     = ClosePayload,
+                                    data        = ClosePayload,
                                     ws_state    = CloseWSState},
     Result = case State#state.cbtype of
                  basic ->
@@ -385,8 +393,10 @@ do_send(#ws_state{sock=undefined}, _) ->
 do_send(WSState, Messages) when is_list(Messages) ->
     [do_send(WSState, Msg) || Msg <- Messages],
     ok;
-do_send(#ws_state{sock=Socket, vsn=ProtoVsn}, {Type, Data}) ->
-    DataFrame = frame(ProtoVsn, Type,  Data),
+do_send(WSState, {Type, Data}) ->
+    do_send(WSState, #ws_frame{opcode=Type, payload=Data});
+do_send(#ws_state{sock=Socket, vsn=ProtoVsn}, #ws_frame{}=Frame) ->
+    DataFrame = frame(ProtoVsn, Frame),
     case yaws_api:get_sslsocket(Socket) of
         {ok, SslSocket} -> ssl:send(SslSocket, DataFrame);
         undefined       -> gen_tcp:send(Socket, DataFrame)
@@ -615,11 +625,9 @@ check_close_code(Code) ->
             Code;
         Code < 1000 ->
             ?WS_STATUS_PROTO_ERROR;
-        Code >= 1004 andalso Code =< 1006 ->
+        Code >= 1004 andalso Code =< 1005 ->
             ?WS_STATUS_PROTO_ERROR;
-        Code >= 1012 andalso Code =< 1016 ->
-            ?WS_STATUS_PROTO_ERROR;
-        Code > 1016 ->
+        Code > 1011 ->
             ?WS_STATUS_PROTO_ERROR;
         true ->
             Code
@@ -899,19 +907,33 @@ atom_to_opcode(ping)         -> 16#9;
 atom_to_opcode(pong)         -> 16#A.
 
 
-%% ProtoVsn must be a supported version !
-frame(ProtoVsn, Type, Data) when ProtoVsn == 13; ProtoVsn == 8 ->
-    %% FIN=true because we're not fragmenting.
-    %% OPCODE=1 for text
-    FirstByte = 128 bor atom_to_opcode(Type),
-    Length    = byte_size(Data),
+%% The Protocol version must be a supported version and reserved bits must be 0
+frame(ProtoVsn, #ws_frame{}=Frame) when ProtoVsn == 13; ProtoVsn == 8 ->
+    Fin = case Frame#ws_frame.fin of
+              true  -> 1;
+              false -> 0
+          end,
+    Rsv = Frame#ws_frame.rsv,
+    OpCode = atom_to_opcode(Frame#ws_frame.opcode),
+    {Mask, MaskingKey} = case Frame#ws_frame.masking_key of
+                             undefined                -> {0, <<>>};
+                             K when byte_size(K) == 4 -> {1, K}
+                         end,
+    Payload = case Mask of
+                  0 -> Frame#ws_frame.payload;
+                  1 -> mask(MaskingKey, Frame#ws_frame.payload)
+              end,
+    Length  = byte_size(Payload),
     if
         Length < 126 ->
-            <<FirstByte, 0:1, Length:7, Data:Length/binary>>;
+            <<Fin:1, Rsv:3, OpCode:4, Mask:1, Length:7,
+              MaskingKey/binary, Payload/binary>>;
         Length < 65536 ->
-            <<FirstByte, 0:1, 126:7, Length:16, Data:Length/binary>>;
+            <<Fin:1, Rsv:3, OpCode:4, Mask:1, 126:7, Length:16,
+              MaskingKey/binary, Payload/binary>>;
         true ->
-            <<FirstByte, 0:1, 127:7, Length:64, Data:Length/binary>>
+            <<Fin:1, Rsv:3, OpCode:4, Mask:1, 127:7, Length:64,
+              MaskingKey/binary, Payload/binary>>
     end.
 
 

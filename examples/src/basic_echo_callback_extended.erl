@@ -4,6 +4,8 @@
 
 -module(basic_echo_callback_extended).
 
+-include("yaws_api.hrl").
+
 %% Export for websocket callbacks
 -export([init/1, terminate/2, handle_open/2, handle_message/2, handle_info/2]).
 
@@ -38,6 +40,22 @@ handle_message({text, <<"something">>}, State) ->
 handle_message({text, <<"say hi later">>}, State) ->
     timer:apply_after(3000, ?MODULE, say_hi, [self()]),
     {noreply, State};
+
+handle_message({text, <<"fragmented message">>}, State) ->
+    io:format("Send a message fragmented in 3 frames~n", []),
+    Frag1 = #ws_frame{fin         = false,
+                      opcode      = text,
+                      masking_key = <<"abcd">>,
+                      payload     = <<"frag1">>},
+    Frag2 = #ws_frame{fin         = false,
+                      opcode      = continuation,
+                      masking_key = <<"efgh">>,
+                      payload     = <<"frag2">>},
+    Frag3 = #ws_frame{fin         = true,
+                      opcode      = continuation,
+                      masking_key = <<"ijkl">>,
+                      payload     = <<"frag3">>},
+    {reply, [Frag1, Frag2, Frag3], State};
 
 handle_message({text, Msg}, #state{nb_texts=N}=State) ->
     io:format("Receive text message (N=~p): ~p bytes~n", [N, byte_size(Msg)]),
