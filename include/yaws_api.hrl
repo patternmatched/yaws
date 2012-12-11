@@ -114,7 +114,7 @@
          }).
 
 %% Corresponds to the frame sections as in
-%% http://tools.ietf.org/html/draft-ietf-hybi-thewebsocketprotocol-08#section-4
+%% http://tools.ietf.org/html/rfc6455#section-5.2
 %% plus 'data' and 'ws_state'
 -record(ws_frame_info, {
           fin,

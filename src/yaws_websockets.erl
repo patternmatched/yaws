@@ -549,8 +549,7 @@ handle_message(#ws_frame_info{opcode=ping, data=Data, ws_state=WSState}, Acc) ->
 
 handle_message(#ws_frame_info{opcode=pong}, Acc) ->
     %% A response to an unsolicited pong frame is not expected.
-    %% http://tools.ietf.org/html/\
-    %%        draft-ietf-hybi-thewebsocketprotocol-08#section-4
+    %% http://tools.ietf.org/html/rfc6455#section-5.5.3
     {continue, Acc};
 
 %% According to RFC 6455 section 5.4, control messages like close MAY be
@@ -693,8 +692,7 @@ checks(Unframed) ->
 check_control_frame(Len, Opcode, Fin) ->
     if
         (Len > 125) and (Opcode > 7) ->
-            %% http://tools.ietf.org/html/\
-            %%          draft-ietf-hybi-thewebsocketprotocol-08#section-4.5
+            %% http://tools.ietf.org/html/rfc6455#section-5.5
             {fail_connection, ?WS_STATUS_PROTO_ERROR,
              <<"control frame > 125 bytes">>};
         (Fin == 0) and (Opcode > 7) ->
@@ -704,9 +702,8 @@ check_control_frame(Len, Opcode, Fin) ->
             ok
     end.
 
-%% no extensions are supported yet.
-%% http://tools.ietf.org/html/\
-%%               draft-ietf-hybi-thewebsocketprotocol-08#section-4.2
+%% no extensions are supported yet
+%% http://tools.ietf.org/html/rfc6455#section-5.2
 check_reserved_bits(Unframed = #ws_frame_info{rsv=0}) ->
     check_reserved_opcode(Unframed);
 check_reserved_bits(#ws_frame_info{rsv=RSV}) ->
