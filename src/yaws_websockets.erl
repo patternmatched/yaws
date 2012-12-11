@@ -158,28 +158,34 @@ handle_call(_Req, _From, State) ->
 handle_cast(ok, #state{arg=Arg, cbinfo=CbInfo}=State) ->
     CliSock = Arg#arg.clisock,
 
-    ProtocolVersion = ws_version(Arg#arg.headers),
-    Protocol        = get_protocol_header(Arg#arg.headers),
-    handshake(ProtocolVersion, Arg, CliSock, Protocol),
+    case ws_version(Arg#arg.headers) of
+        {unsupported_version, V}=Err ->
+            error_logger:error_msg("Unsupported version ~p", [V]),
+            deliver_xxx(CliSock, 400, ["Sec-WebSocket-Version: 13, 8"]),
+            {stop, normal, State#state{reason={error, Err}}};
+        ProtocolVersion ->
+            Protocol = get_protocol_header(Arg#arg.headers),
+            WSState  = #ws_state{sock      = CliSock,
+                                 vsn       = ProtocolVersion,
+                                 frag_type = none},
+            handshake(CliSock, Arg, Protocol),
 
-    WSState  = #ws_state{sock      = CliSock,
-                         vsn       = ProtocolVersion,
-                         frag_type = none},
-
-    case CbInfo#cbinfo.open_fun of
-        undefined ->
-            {noreply, State#state{wsstate=WSState}};
-        OpenFun ->
-            CbMod = CbInfo#cbinfo.module,
-            {FrameState, CbState} = State#state.cbstate,
-            case CbMod:OpenFun(WSState, CbState) of
-                {ok, CbState1} ->
-                    {noreply,
-                     State#state{wsstate=WSState, cbstate={FrameState,CbState1}},
-                     State#state.timeout};
-                {error, Reason} ->
-                    do_close(WSState, Reason),
-                    {stop, normal, State#state{reason={error, Reason}}}
+            case CbInfo#cbinfo.open_fun of
+                undefined ->
+                    {noreply, State#state{wsstate=WSState}};
+                OpenFun ->
+                    CbMod = CbInfo#cbinfo.module,
+                    {FrameState, CbState} = State#state.cbstate,
+                    case CbMod:OpenFun(WSState, CbState) of
+                        {ok, CbState1} ->
+                            {noreply,
+                             State#state{wsstate=WSState,
+                                         cbstate={FrameState,CbState1}},
+                             State#state.timeout};
+                        {error, Reason} ->
+                            do_close(WSState, Reason),
+                            {stop, normal, State#state{reason={error, Reason}}}
+                    end
             end
     end;
 
@@ -360,7 +366,7 @@ check_origin(Actual,  Actual )   -> ok;
 check_origin(_Actual, _Expected) -> error.
 
 
-handshake(8, Arg, CliSock, _Protocol) ->
+handshake(CliSock, Arg, _Protocol) ->
     Key        = get_nonce_header(Arg#arg.headers),
     AcceptHash = hash_nonce(Key),
     Handshake  = ["HTTP/1.1 101 Switching Protocols\r\n",
@@ -397,9 +403,13 @@ do_close(WSState, _) ->
 
 
 deliver_xxx(CliSock, Code) ->
+    deliver_xxx(CliSock, Code, []).
+
+deliver_xxx(CliSock, Code, Hdrs) ->
     Reply = ["HTTP/1.1 ",integer_to_list(Code), $\s,
              yaws_api:code_to_phrase(Code), "\r\n",
              "Connection: close\r\n",
+             lists:flatmap(fun(X) -> X ++ "\r\n" end, Hdrs),
              "\r\n"],
     case yaws_api:get_sslsocket(CliSock) of
         {ok, SslSocket} -> ssl:send(SslSocket, Reply);
@@ -660,8 +670,8 @@ ws_version(Headers) ->
     VersionVal = query_header("sec-websocket-version", Headers),
     case VersionVal of
         "8"  -> 8;
-        "13" -> 8 % treat 13 like 8. Right now 13 support is as good as that
-                  % of 8, according to autobahn 0.4.3
+        "13" -> 13;
+        V    -> {unsupported_version, V}
     end.
 
 buffer(Socket, Len, Buffered) ->
@@ -713,8 +723,8 @@ check_reserved_bits(#ws_frame_info{rsv=RSV}) ->
 
 check_reserved_opcode(#ws_frame_info{opcode = undefined}) ->
     {fail_connection, ?WS_STATUS_PROTO_ERROR, <<"Reserved opcode">>};
-check_reserved_opcode(Unframed) ->
-    Unframed.
+check_reserved_opcode(_) ->
+    ok.
 
 
 ws_frame_info(#ws_state{sock=Socket},
@@ -796,22 +806,21 @@ unframe(State, FirstPacket) ->
     end.
 
 %% -> {#ws_frame_info, RestBin} | {fail_connection, Reason}
-unframe_one(State = #ws_state{vsn=8}, FirstPacket) ->
-    case ws_frame_info(State, FirstPacket) of
+unframe_one(WSState, FirstPacket) ->
+    case ws_frame_info(WSState, FirstPacket) of
         {FrameInfo = #ws_frame_info{}, RestBin} ->
             Unmasked = mask(FrameInfo#ws_frame_info.masking_key,
                             FrameInfo#ws_frame_info.payload),
-            NewState = frag_state_machine(State, FrameInfo),
-            Unframed = FrameInfo#ws_frame_info{data = Unmasked,
-                                               ws_state = NewState},
-
-            case checks(Unframed) of
-                #ws_frame_info{} when is_record(NewState, ws_state) ->
-                    {Unframed, RestBin};
-                #ws_frame_info{} when not is_record(NewState, ws_state) ->
-                    NewState; % pass back the error details
-                Fail ->
-                    Fail
+            case frag_state_machine(WSState, FrameInfo) of
+                #ws_state{}=NewWSState ->
+                    Unframed = FrameInfo#ws_frame_info{data     = Unmasked,
+                                                       ws_state = NewWSState},
+                    case checks(Unframed) of
+                        ok   -> {Unframed, RestBin};
+                        Else -> Else
+                    end;
+                Else ->
+                    Else
             end;
         Else ->
             Else
@@ -890,7 +899,8 @@ atom_to_opcode(ping)         -> 16#9;
 atom_to_opcode(pong)         -> 16#A.
 
 
-frame(8, Type, Data) ->
+%% ProtoVsn must be a supported version !
+frame(ProtoVsn, Type, Data) when ProtoVsn == 13; ProtoVsn == 8 ->
     %% FIN=true because we're not fragmenting.
     %% OPCODE=1 for text
     FirstByte = 128 bor atom_to_opcode(Type),
@@ -898,18 +908,10 @@ frame(8, Type, Data) ->
     if
         Length < 126 ->
             <<FirstByte, 0:1, Length:7, Data:Length/binary>>;
-        Length =< 65535 ->
+        Length < 65536 ->
             <<FirstByte, 0:1, 126:7, Length:16, Data:Length/binary>>;
         true ->
-            Defined = (Length =< math:pow(2,64)),
-            %% TODO: Is the correctness of this pow call better than the speed
-            %% and danger of not checking?
-            case Defined of
-                true ->
-                    <<FirstByte, 0:1, 127:7, Length:64, Data:Length/binary>>;
-                _ ->
-                    undefined
-            end
+            <<FirstByte, 0:1, 127:7, Length:64, Data:Length/binary>>
     end.
 
 
