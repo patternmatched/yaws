@@ -5,7 +5,7 @@
 -module(basic_echo_callback_extended).
 
 %% Export for websocket callbacks
--export([init/1, terminate/2, handle_open/2, handle_message/2]).
+-export([init/1, terminate/2, handle_open/2, handle_message/2, handle_info/2]).
 
 %% Export for apply
 -export([say_hi/1]).
@@ -14,13 +14,13 @@
 
 init([_Arg, Params]) ->
     io:format("Initalize ~p: ~p~n", [self(), Params]),
-    {ok, #state{}}.
+    {ok, #state{}, 10000}.
 
 handle_open(WSState, State) ->
     yaws_websockets:send(WSState, {text, <<"Welcome !">>}),
     {ok, State}.
 
-handle_message({text, <<"bye">>}, #state{nb_texts=N, nb_bins=M}) ->
+handle_message({text, <<"bye">>}, #state{nb_texts=N, nb_bins=M}=State) ->
     io:format("User said bye. ~p text / ~p binary messages echoed ~n", [N, M]),
     NbTexts = list_to_binary(integer_to_list(N)),
     NbBins  = list_to_binary(integer_to_list(M)),
@@ -29,7 +29,7 @@ handle_message({text, <<"bye">>}, #state{nb_texts=N, nb_bins=M}) ->
                 {text, <<NbTexts/binary, " text messages echoed">>},
                 {text, <<NbBins/binary, " binary messages echoed">>}
                ],
-    {close, Messages, {1000, <<"bye">>}};
+    {close, {1000, <<"bye">>}, Messages, State};
 
 handle_message({text, <<"something">>}, State) ->
     io:format("Some action without a reply~n", []),
@@ -55,6 +55,9 @@ handle_message({close, Status, Reason}, _) ->
     io:format("Close connection: ~p - ~p~n", [Status, Reason]),
     {close, Status}.
 
+
+handle_info(_Info, State) ->
+    {noreply, State}.
 
 terminate(Reason, State) ->
     io:format("terminate ~p: ~p (state:~p)~n", [self(), Reason, State]),

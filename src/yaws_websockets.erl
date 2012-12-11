@@ -42,7 +42,7 @@
                  open_fun,
                  msg_fun_1,
                  msg_fun_2,
-		 info_fun}).
+                 info_fun}).
 
 -export([start/3, send/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -205,23 +205,16 @@ handle_info({tcp, Socket, FirstPacket},
             #state{wsstate=#ws_state{sock=Socket}=WSState}=State) ->
     FrameInfos = unframe_active_once(WSState, FirstPacket),
     Result = case State#state.cbtype of
-                 basic    -> catch basic_messages(FrameInfos, State);
-                 advanced -> catch advanced_messages(FrameInfos, State)
+                 basic    -> basic_messages(FrameInfos, State);
+                 advanced -> advanced_messages(FrameInfos, State)
              end,
     case Result of
-        {ok, State1} ->
+        {ok, State1, Timeout} ->
             Last = lists:last(FrameInfos),
             {noreply, State1#state{wsstate=Last#ws_frame_info.ws_state},
-             State1#state.timeout};
-        {close, Reason} ->
-            do_close(WSState, Reason),
-            {stop, normal, State};
-        {error, Reason} ->
-            do_close(WSState, Reason),
-            {stop, normal, State#state{reason={error,Reason}}};
-        {'EXIT', Reason} ->
-            do_close(WSState, ?WS_STATUS_INTERNAL_ERROR),
-            {stop, normal, State#state{reason={error,Reason}}}
+             Timeout};
+        {stop, State1} ->
+            {stop, normal, State1}
     end;
 
 %% Abnormal socket closure.
@@ -242,62 +235,43 @@ handle_info({tcp_closed, Socket},
                                     payload     = ClosePayload,
                                     ws_state    = CloseWSState},
     Result = case State#state.cbtype of
-                 basic    -> catch basic_messages([CloseFrameInfo], State);
-                 advanced -> catch advanced_messages([CloseFrameInfo], State)
+                 basic ->
+                     basic_messages([CloseFrameInfo],
+                                    State#state{wsstate=CloseWSState});
+                 advanced ->
+                     advanced_messages([CloseFrameInfo],
+                                       State#state{wsstate=CloseWSState})
              end,
     case Result of
-        {ok, State1}  ->
-            {stop, normal, State1#state{wsstate=CloseWSState}};
-        {close, _} ->
-            {stop, normal, State#state{wsstate=CloseWSState}};
-        {error, Reason} ->
-            {stop, normal, State#state{wsstate=CloseWSState,
-                                       reason={error,Reason}}};
-        {'EXIT', Reason} ->
-            {stop, normal, State#state{wsstate=CloseWSState,
-                                       reason={error,Reason}}}
+        {ok, State1, _} -> {stop, normal, State1};
+        {stop, State1}  -> {stop, normal, State1}
     end;
 
 %% In absence of frame, call periodically the callback module.
-handle_info(timeout, #state{wsstate=WSState}=State) ->
+handle_info(timeout, State) ->
     Result = case State#state.cbtype of
-                 basic    -> catch basic_messages([timeout], State);
-                 advanced -> catch advanced_messages([timeout], State)
+                 basic    -> basic_messages([timeout], State);
+                 advanced -> advanced_messages([timeout], State)
              end,
     case Result of
-        {ok, State1} ->
-            {noreply, State1, State1#state.timeout};
-        {close, Reason} ->
-            do_close(WSState, Reason),
-            {stop, normal, State};
-        {error, Reason} ->
-            do_close(WSState, Reason),
-            {stop, normal, State#state{reason={error,Reason}}};
-        {'EXIT', Reason} ->
-            do_close(WSState, ?WS_STATUS_INTERNAL_ERROR),
-            {stop, normal, State#state{reason={error,Reason}}}
+        {ok, State1, Timeout} -> {noreply, State1, Timeout};
+        {stop, State1}        -> {stop, normal, State1}
     end;
 
 %% handle info messages
-handle_info(Info, State) ->
-    case (CbInfo=State#state.cbinfo)#cbinfo.info_fun of
-	undefined ->
-	    {noreply, State, State#state.timeout};
-	InfoFun ->
-	    CbMod = CbInfo#cbinfo.module,
-	    {FrameState, CbState} = State#state.cbstate,
-	    Res = CbMod:InfoFun(Info, CbState),
-		case Res of
-		    {noreply, NewCbState} ->
-			{noreply, State#state{cbstate={FrameState,NewCbState}}};
-		    {noreply, NewCbState, Timeout} ->
-			{noreply, State#state{cbstate={FrameState,NewCbState}}, Timeout};
-		    {close, Reason, NewCbState} ->
-			{stop, normal, State#state{reason=Reason,
-                                       cbstate={FrameState,NewCbState}}}
-		    end
+handle_info(Info, #state{cbinfo=CbInfo}=State) ->
+    case CbInfo#cbinfo.info_fun of
+        undefined ->
+            {noreply, State, State#state.timeout};
+        InfoFun ->
+            {_, CbState} = State#state.cbstate,
+            CbMod = CbInfo#cbinfo.module,
+            Res   = CbMod:InfoFun(Info, CbState),
+            case handle_callback_result(Res, State) of
+                {ok, State1, Timeout} -> {noreply, State1, Timeout};
+                {stop, State1}        -> {stop, normal, State1}
+            end
     end.
-
 
 
 %% ----
@@ -352,7 +326,7 @@ get_callback_info(Mod) ->
                           true  -> handle_message;
                           false -> undefined
                       end,
-	    InfoFun = case erlang:function_exported(Mod, handle_info, 2) of
+            InfoFun = case erlang:function_exported(Mod, handle_info, 2) of
                           true  -> handle_info;
                           false -> undefined
                       end,
@@ -362,7 +336,7 @@ get_callback_info(Mod) ->
                          open_fun      = OpenFun,
                          msg_fun_1     = MsgFun1,
                          msg_fun_2     = MsgFun2,
-			 info_fun      = InfoFun}};
+                         info_fun      = InfoFun}};
         {error, Reason} ->
             error_logger:error_msg("Cannot load callback module '~p': ~p",
                                    [Mod, Reason]),
@@ -434,82 +408,51 @@ deliver_xxx(CliSock, Code) ->
 
 
 %% ----
-basic_messages([], State) ->
-    {ok, State};
+basic_messages(FrameInfos, State) ->
+    basic_messages(FrameInfos, State, State#state.timeout).
+
+basic_messages([], State, Tout) ->
+    {ok, State, Tout};
 basic_messages([timeout|Rest],
-               #state{cbinfo=CbInfo, cbstate={FrameState,CbState}}=State) ->
+               #state{cbinfo=CbInfo, cbstate={_,CbState}}=State,
+               _Tout) ->
     CbMod = CbInfo#cbinfo.module,
     Res = case CbInfo#cbinfo.msg_fun_2 of
               undefined ->
                   MsgFun1 = CbInfo#cbinfo.msg_fun_1,
-                  CbMod:MsgFun1(timeout);
+                  catch CbMod:MsgFun1(timeout);
               MsgFun2 ->
-                  CbMod:MsgFun2(timeout, CbState)
+                  catch CbMod:MsgFun2(timeout, CbState)
           end,
-    case Res of
-        {reply, Messages} ->
-            do_send(State#state.wsstate, Messages),
-            basic_messages(Rest, State);
-        {reply, Messages, CbState1} ->
-            do_send(State#state.wsstate, Messages),
-            basic_messages(Rest, State#state{cbstate={FrameState, CbState1}});
-
-        noreply ->
-            basic_messages(Rest, State);
-        {noreply, CbState1} ->
-            basic_messages(Rest, State#state{cbstate={FrameState, CbState1}});
-
-        {close, Messages, Reason} ->
-            do_send(State#state.wsstate, Messages),
-            {close, Reason};
-
-        {close, Reason} ->
-            {close, Reason};
-        {error, Reason} ->
-            {error, Reason}
+    case handle_callback_result(Res, State) of
+        {ok, State1, Tout1} -> basic_messages(Rest, State1, Tout1);
+        {stop, State1}      -> {stop, State1}
     end;
+
 basic_messages([FrameInfo|Rest],
-               #state{cbinfo=CbInfo, cbstate={FrameState,CbState}}=State) ->
+               #state{cbinfo=CbInfo, cbstate={FrameState,CbState}}=State,
+               Tout) ->
     case handle_message(FrameInfo, FrameState) of
         {continue, FrameState1} ->
-            basic_messages(Rest, State#state{cbstate={FrameState1,CbState}});
+            basic_messages(Rest, State#state{cbstate={FrameState1,CbState}},
+                           Tout);
         {message, Message} ->
             CbMod = CbInfo#cbinfo.module,
             Res = case CbInfo#cbinfo.msg_fun_2 of
                       undefined ->
                           MsgFun1 = CbInfo#cbinfo.msg_fun_1,
-                          CbMod:MsgFun1(Message);
+                          catch CbMod:MsgFun1(Message);
                       MsgFun2 ->
-                          CbMod:MsgFun2(Message, CbState)
+                          catch CbMod:MsgFun2(Message, CbState)
                   end,
-            case Res of
-                {reply, Messages} ->
-                    do_send(State#state.wsstate, Messages),
-                    basic_messages(Rest, State#state{cbstate={{none,<<>>},
-                                                              CbState}});
-                {reply, Messages, CbState1} ->
-                    do_send(State#state.wsstate, Messages),
-                    basic_messages(Rest, State#state{cbstate={{none,<<>>},
-                                                              CbState1}});
-
-                noreply ->
-                    basic_messages(Rest, State#state{cbstate={{none,<<>>},
-                                                              CbState}});
-                {noreply, CbState1} ->
-                    basic_messages(Rest, State#state{cbstate={{none,<<>>},
-                                                              CbState1}});
-
-                {close, Messages, Reason} ->
-                    do_send(State#state.wsstate, Messages),
-                    {close, Reason};
-
-                {close, Reason} ->
-                    {close, Reason};
-                {error, Reason} ->
-                    {error, Reason}
+            case handle_callback_result(Res, State) of
+                {ok, State1, Tout1} -> basic_messages(Rest, State1, Tout1);
+                {stop, State1}      -> {stop, State1}
             end;
+
         {error, Reason} ->
-            {error, Reason}
+            do_close(State#state.wsstate, Reason),
+            {stop, State#state{reason=Reason}}
     end.
 
 
@@ -637,27 +580,21 @@ handle_message({fail_connection, Status, Msg}, _Acc) ->
     {error, {Status, Msg}}.
 
 
-advanced_messages([], State) ->
-    {ok, State};
+
+advanced_messages(FrameInfos, State) ->
+    advanced_messages(FrameInfos, State, State#state.timeout).
+
+advanced_messages([], State, Tout) ->
+    {ok, State, Tout};
 advanced_messages([FrameInfo|Rest],
-                  #state{cbinfo=CbInfo, cbstate={undefined,CbState}}=State) ->
+                  #state{cbinfo=CbInfo, cbstate={undefined,CbState}}=State,
+                  _Tout) ->
     CbMod   = CbInfo#cbinfo.module,
     MsgFun2 = CbInfo#cbinfo.msg_fun_2,
-    case CbMod:MsgFun2(FrameInfo, CbState) of
-        {reply, Messages, CbState1} ->
-            do_send(State#state.wsstate, Messages),
-            advanced_messages(Rest, State#state{cbstate={undefined,CbState1}});
-        {noreply, CbState1} ->
-            advanced_messages(Rest, State#state{cbstate={undefined,CbState1}});
-
-        {close, Messages, Reason} ->
-            do_send(State#state.wsstate, Messages),
-            {close, Reason};
-
-        {close, Reason} ->
-            {close, Reason};
-        {error, Reason} ->
-            {error, Reason}
+    Res     = (catch CbMod:MsgFun2(FrameInfo, CbState)),
+    case handle_callback_result(Res, State) of
+        {ok, State1, Tout1} -> advanced_messages(Rest, State1, Tout1);
+        {stop, State1}      -> {stop, State1}
     end.
 
 
@@ -678,6 +615,45 @@ check_close_code(Code) ->
         true ->
             Code
     end.
+
+
+handle_callback_result({reply, Messages}, State) ->
+    do_send(State#state.wsstate, Messages),
+    {ok, State, State#state.timeout};
+handle_callback_result({reply, Messages, CbState1}, State) ->
+    do_send(State#state.wsstate, Messages),
+    {FrameState, _} = State#state.cbstate,
+    {ok, State#state{cbstate={FrameState, CbState1}}, State#state.timeout};
+handle_callback_result({reply, Messages, CbState1, Timeout}, State) ->
+    do_send(State#state.wsstate, Messages),
+    {FrameState, _} = State#state.cbstate,
+    {ok, State#state{cbstate={FrameState, CbState1}}, Timeout};
+
+handle_callback_result(noreply, State) ->
+    {ok, State, State#state.timeout};
+handle_callback_result({noreply, CbState1}, State) ->
+    {FrameState, _} = State#state.cbstate,
+    {ok, State#state{cbstate={FrameState, CbState1}}, State#state.timeout};
+handle_callback_result({noreply, CbState1, Timeout}, State) ->
+    {FrameState, _} = State#state.cbstate,
+    {ok, State#state{cbstate={FrameState, CbState1}}, Timeout};
+
+handle_callback_result({close, Reason}, State) ->
+    do_close(State#state.wsstate, Reason),
+    {stop, State#state{reason=Reason}};
+handle_callback_result({close, Reason, CbState1}, State) ->
+    do_close(State#state.wsstate, Reason),
+    {FrameState, _} = State#state.cbstate,
+    {stop, State#state{cbstate={FrameState, CbState1}, reason=Reason}};
+handle_callback_result({close, Reason, Messages, CbState1}, State) ->
+    do_send(State#state.wsstate, Messages),
+    do_close(State#state.wsstate, Reason),
+    {FrameState, _} = State#state.cbstate,
+    {stop, State#state{cbstate={FrameState, CbState1}, reason=Reason}};
+
+handle_callback_result({'EXIT', Reason}, State) ->
+    do_close(State#state.wsstate, ?WS_STATUS_INTERNAL_ERROR),
+    {stop, State#state{reason={error,Reason}}}.
 
 
 %% ----
