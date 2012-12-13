@@ -289,7 +289,7 @@ handle_info(Info, #state{cbinfo=CbInfo}=State) ->
 
 
 %% ----
-terminate(_, #state{wsstate=#ws_state{sock=CliSock}, cbinfo=CbInfo}=State) ->
+terminate(_, #state{arg=Arg, cbinfo=CbInfo}=State) ->
     case CbInfo#cbinfo.terminate_fun of
         undefined ->
             ok;
@@ -298,6 +298,10 @@ terminate(_, #state{wsstate=#ws_state{sock=CliSock}, cbinfo=CbInfo}=State) ->
             {_, CbState} = State#state.cbstate,
             CbMod:TerminateFun(State#state.reason, CbState)
     end,
+    CliSock = case State#state.wsstate of
+                  undefined -> Arg#arg.clisock;
+                  WSState   -> WSState#ws_state.sock
+              end,
     if
         CliSock /= undefined ->
             case yaws_api:get_sslsocket(CliSock) of
