@@ -688,24 +688,28 @@ ws_version(Headers) ->
 
 buffer(Socket, Len, Buffered) ->
     case Buffered of
-        <<_Expected:Len/binary>> = Return -> % exactly enough
-            Return;
-        <<_Expected:Len/binary,_Extra/binary>> = Return-> % more than expected
-            Return;
+        <<_Expected:Len/binary>> -> % exactly enough
+            Buffered;
+        <<_Expected:Len/binary,_Extra/binary>> -> % more than expected
+            Buffered;
         _ ->
             %% not enough
-            Needed = Len - binary_length(Buffered),
-            {ok, More} = case yaws_api:get_sslsocket(Socket) of
-                             {ok, SslSocket} -> ssl:recv(SslSocket, Needed);
-                             undefined       -> gen_tcp:recv(Socket, Needed)
-                         end,
+            More = do_recv(Socket, Len - byte_size(Buffered), []),
             <<Buffered/binary, More/binary>>
     end.
 
-binary_length(<<>>) ->
-    0;
-binary_length(<<_First:1/binary, Rest/binary>>) ->
-    1 + binary_length(Rest).
+do_recv(_, 0, Acc) ->
+    list_to_binary(lists:reverse(Acc));
+do_recv(Socket, Sz, Acc) ->
+    %% TODO: add configurable timeout to receive data
+    Res = case yaws_api:get_sslsocket(Socket) of
+              {ok, SslSocket} -> ssl:recv(SslSocket, Sz,  2000);
+              undefined       -> gen_tcp:recv(Socket, Sz, 2000)
+          end,
+    case Res of
+        {ok, Bin}       -> do_recv(Socket, Sz - byte_size(Bin), [Bin|Acc]);
+        {error, Reason} -> throw({tcp_error, Reason})
+    end.
 
 
 checks(Unframed) ->
@@ -760,8 +764,8 @@ ws_frame_info(#ws_state{sock=Socket},
             Other
     end;
 
-ws_frame_info(State = #ws_state{sock=Socket}, FirstPacket) ->
-    ws_frame_info(State, buffer(Socket, 2, FirstPacket)).
+ws_frame_info(WSState = #ws_state{sock=Socket}, FirstPacket) ->
+    ws_frame_info(WSState, buffer(Socket, 2, FirstPacket)).
 
 
 ws_frame_info_secondary(Socket, Masked, Len1, Rest) ->
@@ -772,13 +776,13 @@ ws_frame_info_secondary(Socket, Masked, Len1, Rest) ->
     case Len1 of
         126 ->
             <<Len:16, MaskingKey:MaskLength/binary, Rest2/binary>> =
-                buffer(Socket, 6, Rest);
+                buffer(Socket, MaskLength + 2 , Rest);
         127 ->
             <<Len:64, MaskingKey:MaskLength/binary, Rest2/binary>> =
-                buffer(Socket, 12, Rest);
+                buffer(Socket, MaskLength + 8 , Rest);
         Len ->
             <<MaskingKey:MaskLength/binary, Rest2/binary>> =
-                buffer(Socket, 4, Rest)
+                buffer(Socket, MaskLength, Rest)
     end,
     if
         Len > ?MAX_PAYLOAD ->
@@ -792,10 +796,11 @@ ws_frame_info_secondary(Socket, Masked, Len1, Rest) ->
             {ws_frame_info_secondary, Len, MaskingKey, Payload, Excess}
     end.
 
-unframe_active_once(State, FirstPacket) ->
-    Frames = unframe(State, FirstPacket),
-    websocket_setopts(State, [{active, once}]),
+unframe_active_once(WSState, FirstPacket) ->
+    Frames = unframe(WSState, FirstPacket),
+    websocket_setopts(WSState, [{active, once}]),
     Frames.
+
 
 %% Returns all the WebSocket frames fully or partially contained in FirstPacket,
 %% reading exactly as many more bytes from Socket as are needed to finish
@@ -805,21 +810,21 @@ unframe_active_once(State, FirstPacket) ->
 %% your socket receive buffer.
 %%
 %% -> { #ws_state, [#ws_frame_info,...,#ws_frame_info] }
-unframe(_State, <<>>) ->
+unframe(_WSState, <<>>) ->
     [];
-unframe(State, FirstPacket) ->
-    case unframe_one(State, FirstPacket) of
-        {FrameInfo = #ws_frame_info{ws_state = NewState}, RestBin} ->
+unframe(WSState, FirstPacket) ->
+    case unframe_one(WSState, FirstPacket) of
+        {FrameInfo = #ws_frame_info{ws_state = NewWSState}, RestBin} ->
             %% Every new recursion uses the #ws_state from the calling
             %% recursion.
-            [FrameInfo | unframe(NewState, RestBin)];
+            [FrameInfo | unframe(NewWSState, RestBin)];
         Fail ->
             [Fail]
     end.
 
 %% -> {#ws_frame_info, RestBin} | {fail_connection, Reason}
 unframe_one(WSState, FirstPacket) ->
-    case ws_frame_info(WSState, FirstPacket) of
+    case catch ws_frame_info(WSState, FirstPacket) of
         {FrameInfo = #ws_frame_info{}, RestBin} ->
             Unmasked = mask(FrameInfo#ws_frame_info.masking_key,
                             FrameInfo#ws_frame_info.payload),
@@ -834,6 +839,20 @@ unframe_one(WSState, FirstPacket) ->
                 Else ->
                     Else
             end;
+        {tcp_error, Reason} ->
+            error_logger:error_msg("Abnormal Closure: ~p", [Reason]),
+            CloseStatus    = ?WS_STATUS_ABNORMAL_CLOSURE,
+            ClosePayload   = <<CloseStatus:16/big>>,
+            CloseWSState   = WSState#ws_state{sock=undefined,frag_type=none},
+            {#ws_frame_info{fin         = 1,
+                            rsv         = 0,
+                            opcode      = close,
+                            masked      = 0,
+                            masking_key = 0,
+                            length      = 2,
+                            payload     = ClosePayload,
+                            data        = ClosePayload,
+                            ws_state    = CloseWSState}, <<>>};
         Else ->
             Else
     end.
