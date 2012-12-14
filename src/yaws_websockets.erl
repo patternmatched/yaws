@@ -115,6 +115,8 @@ send(Pid, #ws_frame{}=Frame) ->
 %% gen_server functions
 %%%----------------------------------------------------------------------
 init([Arg, CbMod, Opts]) ->
+    {mask_frames, Bool} = lists:keyfind(mask_frames, 1, Opts),
+    put(mask_frames, Bool),
     {CbType, FrameState, InitState} =
         case lists:keyfind(callback, 1, Opts) of
             {callback, {basic,    St}} -> {basic, {none, <<>>}, St};
@@ -337,7 +339,7 @@ preprocess_opts(GivenOpts) ->
                       _     -> Opts
                   end
           end,
-    Defaults = [{origin,any}, {callback,basic}],
+    Defaults = [{origin,any}, {callback,basic}, {mask_frames, false}],
     lists:foldl(Fun, GivenOpts, Defaults).
 
 
@@ -368,10 +370,16 @@ do_send(WSState, Messages) when is_list(Messages) ->
 do_send(WSState, {Type, Data}) ->
     do_send(WSState, #ws_frame{opcode=Type, payload=Data});
 do_send(#ws_state{sock=Socket, vsn=ProtoVsn}, #ws_frame{}=Frame) ->
-    DataFrame = frame(ProtoVsn, Frame),
+    %% Check if the frame must be masked or not.
+    Frame1 = case {get(mask_frames), Frame#ws_frame.masking_key} of
+                 {true, undefined} ->
+                     Frame#ws_frame{masking_key=crypto:rand_bytes(4)};
+                 _ ->
+                     Frame
+             end,
     case yaws_api:get_sslsocket(Socket) of
-        {ok, SslSocket} -> ssl:send(SslSocket, DataFrame);
-        undefined       -> gen_tcp:send(Socket, DataFrame)
+        {ok, SslSocket} -> ssl:send(SslSocket,  frame(ProtoVsn, Frame1));
+        undefined       -> gen_tcp:send(Socket, frame(ProtoVsn, Frame1))
     end.
 
 

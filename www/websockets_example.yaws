@@ -28,7 +28,8 @@ html_body(WebSocketLocation) ->
 
     var client = {
         connect: function(){
-         this._ws=new WS(\"ws://" ++ WebSocketLocation ++ "?extversion=\"+$('extVersion').checked);
+         this._ws=new WS(\"ws://" ++ WebSocketLocation ++
+                          "?extversion=\"+$('extVersion').checked + \"&mask_frames=\"+$('mask_frames').checked);
          this._ws.onopen=this._onopen;
          this._ws.onmessage=this._onmessage;
          this._ws.onclose=this._onclose;
@@ -37,6 +38,7 @@ html_body(WebSocketLocation) ->
         _onopen: function(){
           $('connect').className='hidden';
           $('connected').className='';
+          $('options').className='hidden';
           $('phrase').focus();
           client._send('client-connected');
        },
@@ -65,6 +67,7 @@ html_body(WebSocketLocation) ->
           this._ws=null;
           $('connect').className='';
           $('connected').className='hidden';
+          $('options').className='';
         }
     };
   </script>
@@ -80,8 +83,9 @@ html_body(WebSocketLocation) ->
       <li>Sending \"fragmented message\" sends \"fag1frag2frag2\".</li>
       <li>Sending \"something\" does nothing.</li>
       <li>Other messages are echoed.</li></ul>
-  <div>
-    <input id='extVersion' type='checkbox'/> Use extended version
+  <div id=\"options\">
+    <input id='extVersion' type='checkbox'/> Use extended version<br/>
+    <input id='mask_frames' type='checkbox'/> Mask server frames
   </div>
   <div id=\"msgs\"></div>
   <div id=\"connect\">

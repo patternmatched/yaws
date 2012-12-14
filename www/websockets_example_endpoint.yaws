@@ -4,9 +4,14 @@ out(A) ->
                       {ok, "true"} -> basic_echo_callback_extended;
                       _            -> basic_echo_callback
                   end,
+    MaskFrames  = case queryvar(A, "mask_frames") of
+                      {ok, "true"} -> true;
+                      _            -> false
+                  end,
     %% NOTE: change the line below to
     %%   Opts = [{origin, any}],
     %% if you want to accept calls from any origin.
-    Opts = [{origin, any}, {timeout, 10000}],
+    Opts = [{origin, "http://" ++ (A#arg.headers)#headers.host},
+            {mask_frames, MaskFrames}],
     {websocket, CallbackMod, Opts}.
 </erl>
