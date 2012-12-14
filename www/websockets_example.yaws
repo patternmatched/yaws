@@ -29,7 +29,9 @@ html_body(WebSocketLocation) ->
     var client = {
         connect: function(){
          this._ws=new WS(\"ws://" ++ WebSocketLocation ++
-                          "?extversion=\"+$('extVersion').checked + \"&mask_frames=\"+$('mask_frames').checked);
+                          "?extversion=\"+$('extVersion').checked +
+                          \"&mask_frames=\"+$('mask_frames').checked +
+                          \"&timeout=\"+$('timeout').value);
          this._ws.onopen=this._onopen;
          this._ws.onmessage=this._onmessage;
          this._ws.onclose=this._onclose;
@@ -84,8 +86,9 @@ html_body(WebSocketLocation) ->
       <li>Sending \"something\" does nothing.</li>
       <li>Other messages are echoed.</li></ul>
   <div id=\"options\">
-    <input id='extVersion' type='checkbox'/> Use extended version<br/>
-    <input id='mask_frames' type='checkbox'/> Mask server frames
+    <input id='extVersion'  type='checkbox'/> Use extended version<br/>
+    <input id='mask_frames' type='checkbox'/> Mask server frames<br/>
+    Default timeout (in milliseconds) <input id='timeout' type='text' size='5'/>
   </div>
   <div id=\"msgs\"></div>
   <div id=\"connect\">

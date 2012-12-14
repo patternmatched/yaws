@@ -8,10 +8,23 @@ out(A) ->
                       {ok, "true"} -> true;
                       _            -> false
                   end,
+    Tout  = case queryvar(A, "timeout") of
+                {ok, Val} ->
+                    try
+                        list_to_integer(Val)
+                    catch
+                        _:_ -> infinity
+                    end;
+                _ ->
+                    infinity
+            end,
     %% NOTE: change the line below to
     %%   Opts = [{origin, any}],
     %% if you want to accept calls from any origin.
-    Opts = [{origin, "http://" ++ (A#arg.headers)#headers.host},
-            {mask_frames, MaskFrames}],
+    Opts = [
+            {origin,      "http://" ++ (A#arg.headers)#headers.host},
+            {mask_frames, MaskFrames},
+            {timeout,     Tout}
+           ],
     {websocket, CallbackMod, Opts}.
 </erl>

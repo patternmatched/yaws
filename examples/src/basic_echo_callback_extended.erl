@@ -16,7 +16,7 @@
 
 init([_Arg, Params]) ->
     io:format("Initalize ~p: ~p~n", [self(), Params]),
-    {ok, #state{}, 10000}.
+    {ok, #state{}}.
 
 handle_open(WSState, State) ->
     yaws_websockets:send(WSState, {text, <<"Welcome !">>}),

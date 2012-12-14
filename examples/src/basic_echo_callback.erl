@@ -31,7 +31,10 @@ handle_message({binary, Message}) ->
     {reply, {binary, Message}};
 
 handle_message({close, Status, _Reason}) ->
-    {close, Status}.
+    {close, Status};
+
+handle_message(timeout) ->
+    noreply.
 
 
 say_hi(Pid) ->

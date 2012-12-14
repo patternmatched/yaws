@@ -123,13 +123,15 @@ init([Arg, CbMod, Opts]) ->
             {callback, {advanced, St}} -> {advanced, undefined, St};
             _                          -> {basic, {none, <<>>}, []}
         end,
+    {timeout, DefaultTout} = lists:keyfind(timeout, 1, Opts),
     case get_callback_info(CbMod) of
         {ok, #cbinfo{init_fun=undefined}=CbInfo} ->
             {ok, #state{arg     = Arg,
                         opts    = Opts,
                         cbinfo  = CbInfo,
                         cbtype  = CbType,
-                        cbstate = {FrameState,InitState}}};
+                        cbstate = {FrameState,InitState},
+                        timeout = DefaultTout}, DefaultTout};
         {ok, #cbinfo{init_fun=InitFun}=CbInfo} ->
             case CbMod:InitFun([Arg, InitState]) of
                 {ok, InitState1} ->
@@ -137,14 +139,15 @@ init([Arg, CbMod, Opts]) ->
                                 opts    = Opts,
                                 cbinfo  = CbInfo,
                                 cbtype  = CbType,
-                                cbstate = {FrameState,InitState1}}};
+                                cbstate = {FrameState,InitState1},
+                                timeout = DefaultTout}, DefaultTout};
                 {ok, InitState1, Timeout} ->
                     {ok, #state{arg     = Arg,
                                 opts    = Opts,
                                 cbinfo  = CbInfo,
                                 cbtype  = CbType,
                                 cbstate = {FrameState,InitState1},
-                                timeout = Timeout}};
+                                timeout = DefaultTout}, Timeout};
                 {error, Reason} ->
                     {stop, Reason}
             end;
@@ -339,7 +342,12 @@ preprocess_opts(GivenOpts) ->
                       _     -> Opts
                   end
           end,
-    Defaults = [{origin,any}, {callback,basic}, {mask_frames, false}],
+    Defaults = [
+                {origin,      any},
+                {callback,    basic},
+                {mask_frames, false},
+                {timeout,     infinity}
+               ],
     lists:foldl(Fun, GivenOpts, Defaults).
 
 
