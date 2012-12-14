@@ -215,51 +215,19 @@ handle_cast(_Msg, State) ->
 %% ----
 %% Receive a TCP packet from the client
 handle_info({tcp, Socket, FirstPacket},
-            #state{wsstate=#ws_state{sock=Socket}=WSState}=State) ->
-    FrameInfos = unframe_active_once(WSState, FirstPacket),
-    Result = case State#state.cbtype of
-                 basic    -> basic_messages(FrameInfos, State);
-                 advanced -> advanced_messages(FrameInfos, State)
-             end,
-    case Result of
-        {ok, State1, Timeout} ->
-            Last = lists:last(FrameInfos),
-            {noreply, State1#state{wsstate=Last#ws_frame_info.ws_state},
-             Timeout};
-        {stop, State1} ->
-            {stop, normal, State1}
-    end;
+            #state{wsstate=#ws_state{sock=Socket}}=State) ->
+    handle_frames(FirstPacket, State);
+handle_info({ssl, Socket, FirstPacket},
+            #state{wsstate=#ws_state{sock={ssl, Socket}}}=State) ->
+    handle_frames(FirstPacket, State);
 
 %% Abnormal socket closure.
 handle_info({tcp_closed, Socket},
-            #state{wsstate=#ws_state{sock=Socket}=WSState}=State) ->
-    %% The only way we should get here is due to an abnormal close. Section
-    %% 7.1.5 of RFC 6455 specifies 1006 as the connection close code for
-    %% abnormal closure. It's also described in section 7.4.1.
-    CloseStatus    = ?WS_STATUS_ABNORMAL_CLOSURE,
-    ClosePayload   = <<CloseStatus:16/big>>,
-    CloseWSState   = WSState#ws_state{sock=undefined,frag_type=none},
-    CloseFrameInfo = #ws_frame_info{fin         = 1,
-                                    rsv         = 0,
-                                    opcode      = close,
-                                    masked      = 0,
-                                    masking_key = 0,
-                                    length      = 2,
-                                    payload     = ClosePayload,
-                                    data        = ClosePayload,
-                                    ws_state    = CloseWSState},
-    Result = case State#state.cbtype of
-                 basic ->
-                     basic_messages([CloseFrameInfo],
-                                    State#state{wsstate=CloseWSState});
-                 advanced ->
-                     advanced_messages([CloseFrameInfo],
-                                       State#state{wsstate=CloseWSState})
-             end,
-    case Result of
-        {ok, State1, _} -> {stop, normal, State1};
-        {stop, State1}  -> {stop, normal, State1}
-    end;
+            #state{wsstate=#ws_state{sock=Socket}}=State) ->
+    handle_abnormal_closure(State);
+handle_info({ssl_closed, Socket},
+            #state{wsstate=#ws_state{sock={ssl, Socket}}}=State) ->
+    handle_abnormal_closure(State);
 
 %% In absence of frame, call periodically the callback module.
 handle_info(timeout, State) ->
@@ -428,6 +396,52 @@ deliver_xxx(CliSock, Code, Hdrs) ->
     case yaws_api:get_sslsocket(CliSock) of
         {ok, SslSocket} -> ssl:send(SslSocket, Reply);
         undefined       -> gen_tcp:send(CliSock, Reply)
+    end.
+
+
+%% ----
+handle_frames(FirstPacket, #state{wsstate=WSState}=State) ->
+    FrameInfos = unframe_active_once(WSState, FirstPacket),
+    Result = case State#state.cbtype of
+                 basic    -> basic_messages(FrameInfos, State);
+                 advanced -> advanced_messages(FrameInfos, State)
+             end,
+    case Result of
+        {ok, State1, Timeout} ->
+            Last = lists:last(FrameInfos),
+            {noreply, State1#state{wsstate=Last#ws_frame_info.ws_state},
+             Timeout};
+        {stop, State1} ->
+            {stop, normal, State1}
+    end.
+
+handle_abnormal_closure(#state{wsstate=WSState}=State) ->
+    %% The only way we should get here is due to an abnormal close. Section
+    %% 7.1.5 of RFC 6455 specifies 1006 as the connection close code for
+    %% abnormal closure. It's also described in section 7.4.1.
+    CloseStatus    = ?WS_STATUS_ABNORMAL_CLOSURE,
+    ClosePayload   = <<CloseStatus:16/big>>,
+    CloseWSState   = WSState#ws_state{sock=undefined,frag_type=none},
+    CloseFrameInfo = #ws_frame_info{fin         = 1,
+                                    rsv         = 0,
+                                    opcode      = close,
+                                    masked      = 0,
+                                    masking_key = 0,
+                                    length      = 2,
+                                    payload     = ClosePayload,
+                                    data        = ClosePayload,
+                                    ws_state    = CloseWSState},
+    Result = case State#state.cbtype of
+                 basic ->
+                     basic_messages([CloseFrameInfo],
+                                    State#state{wsstate=CloseWSState});
+                 advanced ->
+                     advanced_messages([CloseFrameInfo],
+                                       State#state{wsstate=CloseWSState})
+             end,
+    case Result of
+        {ok, State1, _} -> {stop, normal, State1};
+        {stop, State1}  -> {stop, normal, State1}
     end.
 
 
