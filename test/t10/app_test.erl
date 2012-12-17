@@ -34,7 +34,11 @@ start() ->
 
     test_valid_opening_handshake(),
     test_bad_version_handshake(),
-    test_bad_version_handshake(),
+    test_bad_origin_handshake(),
+    test_noconnection_handshake(),
+    test_bad_connection_handshake(),
+    test_noupgrade_handshake(),
+    test_bad_upgrade_handshake(),
 
     test_basic_unfragmented_text(0, all),
     test_basic_unfragmented_text(125, all),
@@ -227,10 +231,117 @@ test_bad_origin_handshake() ->
 
     %% Send the handshake and retrieve the response
     ?line {ok, Sock}     = open("localhost", 8000),
-    ?line {ok, {403, _}} = wsopen(Sock, Key, WSPath, "http://localhost", 15),
+    ?line {ok, {403, _}} = wsopen(Sock, Key, WSPath, "http://otherhost", 13),
 
     ?line ok = close(Sock),
     ok.
+
+
+%% ----
+test_noconnection_handshake() ->
+    io:format("noconnection_handshake~n",[]),
+    WSPath = "/websockets_example_endpoint.yaws",
+    Key    = "dGhlIHNhbXBsZSBub25jZQ==",
+
+    %% Send the handshake and retrieve the response
+    ?line {ok, Sock}     = open("localhost", 8000),
+
+    Handshake = ["GET ", WSPath, " HTTP/1.1\r\n",
+                 "Host: localhost\r\n",
+                 "Upgrade: websocket\r\n",
+                 "Sec-WebSocket-Key: ", Key, "\r\n",
+                 "Origin: http://localhost\r\n",
+                 "Sec-WebSocket-Version: 13\r\n",
+                 "\r\n"],
+    case yaws_api:get_sslsocket(Sock) of
+        {ok, SslSock} -> ssl:send(SslSock, Handshake);
+        undefined     -> gen_tcp:send(Sock, Handshake)
+    end,
+    ?line {ok, {400, _}} = read_handshake_response(Sock),
+
+    ?line ok = close(Sock),
+    ok.
+
+
+%% ----
+test_bad_connection_handshake() ->
+    io:format("bad_connection_handshake~n",[]),
+    WSPath = "/websockets_example_endpoint.yaws",
+    Key    = "dGhlIHNhbXBsZSBub25jZQ==",
+
+    %% Send the handshake and retrieve the response
+    ?line {ok, Sock}     = open("localhost", 8000),
+
+    Handshake = ["GET ", WSPath, " HTTP/1.1\r\n",
+                 "Host: localhost\r\n",
+                 "Upgrade: websocket\r\n",
+                 "Connection: Keep-Alive\r\n",
+                 "Sec-WebSocket-Key: ", Key, "\r\n",
+                 "Origin: http://localhost\r\n",
+                 "Sec-WebSocket-Version: 13\r\n",
+                 "\r\n"],
+    case yaws_api:get_sslsocket(Sock) of
+        {ok, SslSock} -> ssl:send(SslSock, Handshake);
+        undefined     -> gen_tcp:send(Sock, Handshake)
+    end,
+    ?line {ok, {400, _}} = read_handshake_response(Sock),
+
+    ?line ok = close(Sock),
+    ok.
+
+
+%% ----
+test_noupgrade_handshake() ->
+    io:format("noupgrade_handshake~n",[]),
+    WSPath = "/websockets_example_endpoint.yaws",
+    Key    = "dGhlIHNhbXBsZSBub25jZQ==",
+
+    %% Send the handshake and retrieve the response
+    ?line {ok, Sock}     = open("localhost", 8000),
+
+    Handshake = ["GET ", WSPath, " HTTP/1.1\r\n",
+                 "Host: localhost\r\n",
+                 "Connection: Upgrade\r\n",
+                 "Sec-WebSocket-Key: ", Key, "\r\n",
+                 "Origin: http://localhost\r\n",
+                 "Sec-WebSocket-Version: 13\r\n",
+                 "\r\n"],
+    case yaws_api:get_sslsocket(Sock) of
+        {ok, SslSock} -> ssl:send(SslSock, Handshake);
+        undefined     -> gen_tcp:send(Sock, Handshake)
+    end,
+    ?line {ok, {400, _}} = read_handshake_response(Sock),
+
+    ?line ok = close(Sock),
+    ok.
+
+
+%% ----
+test_bad_upgrade_handshake() ->
+    io:format("bad_upgrade_handshake~n",[]),
+    WSPath = "/websockets_example_endpoint.yaws",
+    Key    = "dGhlIHNhbXBsZSBub25jZQ==",
+
+    %% Send the handshake and retrieve the response
+    ?line {ok, Sock}     = open("localhost", 8000),
+
+    Handshake = ["GET ", WSPath, " HTTP/1.1\r\n",
+                 "Host: localhost\r\n",
+                 "Upgrade: TLS/1.0\r\n",
+                 "Connection: Upgrade\r\n",
+                 "Sec-WebSocket-Key: ", Key, "\r\n",
+                 "Origin: http://localhost\r\n",
+                 "Sec-WebSocket-Version: 13\r\n",
+                 "\r\n"],
+    case yaws_api:get_sslsocket(Sock) of
+        {ok, SslSock} -> ssl:send(SslSock, Handshake);
+        undefined     -> gen_tcp:send(Sock, Handshake)
+    end,
+    ?line {ok, {400, _}} = read_handshake_response(Sock),
+
+    ?line ok = close(Sock),
+    ok.
+
 
 
 %% ----

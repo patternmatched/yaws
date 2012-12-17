@@ -54,7 +54,27 @@
 start(Arg, CallbackMod, Opts) ->
     PrepdOpts = preprocess_opts(Opts),
 
-    %% Check origin header
+    %% Do some checks on request headers before starting the WebSocket process:
+    %%   o "Connection:" header field should contain "websocket"
+    %%   o "Upgrade:" header field should contain "upgrade"
+    %%   o "Origin:" header field should be valid
+    case check_connection(query_header("connection", Arg#arg.headers)) of
+        ok ->
+            ok;
+        error ->
+            error_logger:error_msg("Invalid connection header", []),
+            deliver_xxx(Arg#arg.clisock, 400),
+            exit(normal)
+    end,
+
+    case check_upgrade(query_header("upgrade", Arg#arg.headers)) of
+        ok ->
+            ok;
+        error ->
+            error_logger:error_msg("Invalid upgrade header", []),
+            deliver_xxx(Arg#arg.clisock, 400),
+            exit(normal)
+    end,
     {origin, OriginOpt} = lists:keyfind(origin, 1, PrepdOpts),
     Origin = get_origin_header(Arg#arg.headers),
     case check_origin(Origin, OriginOpt) of
@@ -167,17 +187,25 @@ handle_call(_Req, _From, State) ->
 handle_cast(ok, #state{arg=Arg, cbinfo=CbInfo}=State) ->
     CliSock = Arg#arg.clisock,
 
-    case ws_version(Arg#arg.headers) of
-        {unsupported_version, V}=Err ->
-            error_logger:error_msg("Unsupported version ~p", [V]),
+    WSVersion = ws_version(Arg#arg.headers),
+    WSKey     = get_nonce_header(Arg#arg.headers),
+    if
+        element(1, WSVersion) == unsupported_version ->
+            error_logger:error_msg("Unsupported protocol version", []),
             deliver_xxx(CliSock, 400, ["Sec-WebSocket-Version: 13, 8"]),
-            {stop, normal, State#state{reason={error, Err}}};
-        ProtocolVersion ->
+            {stop, normal, State#state{reason={error, WSVersion}}};
+
+        undefined == WSKey ->
+            error_logger:error_msg("No key found", []),
+            deliver_xxx(CliSock, 400),
+            {stop, normal, State#state{reason={error, key_notfound}}};
+
+        true ->
             Protocol = get_protocol_header(Arg#arg.headers),
             WSState  = #ws_state{sock      = CliSock,
-                                 vsn       = ProtocolVersion,
+                                 vsn       = WSVersion,
                                  frag_type = none},
-            handshake(CliSock, Arg, Protocol),
+            handshake(CliSock, WSKey, Protocol),
 
             case CbInfo#cbinfo.open_fun of
                 undefined ->
@@ -355,9 +383,27 @@ check_origin(_Origin, any)       -> ok;
 check_origin(Actual,  Actual )   -> ok;
 check_origin(_Actual, _Expected) -> error.
 
+check_connection(undefined) ->
+    error;
+check_connection(Connection) ->
+    Vals = yaws:split_sep(string:to_lower(Connection), $,),
+    case lists:member("upgrade", Vals) of
+        true  -> ok;
+        false -> error
+    end.
 
-handshake(CliSock, Arg, _Protocol) ->
-    Key        = get_nonce_header(Arg#arg.headers),
+check_upgrade(undefined) ->
+    error;
+check_upgrade(Upgrade) ->
+    Vals = yaws:split_sep(string:to_lower(Upgrade), $,),
+    case lists:member("websocket", Vals) of
+        true  -> ok;
+        false -> error
+    end.
+
+
+
+handshake(CliSock, Key, _Protocol) ->
     AcceptHash = hash_nonce(Key),
     Handshake  = ["HTTP/1.1 101 Switching Protocols\r\n",
                   "Upgrade: websocket\r\n",
