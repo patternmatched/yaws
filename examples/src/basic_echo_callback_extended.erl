@@ -65,15 +65,14 @@ handle_message({binary, Msg}, #state{nb_bins=M}=State) ->
     io:format("Receive binary message (M=~p): ~p bytes~n", [M, byte_size(Msg)]),
     {reply, {binary, Msg}, State#state{nb_bins=M+1}};
 
-handle_message(timeout, State) ->
-    io:format("process timed out~n", []),
-    {reply, {text, <<"Anybody Else ?">>}, State};
-
 handle_message({close, Status, Reason}, _) ->
     io:format("Close connection: ~p - ~p~n", [Status, Reason]),
     {close, Status}.
 
 
+handle_info(timeout, State) ->
+    io:format("process timed out~n", []),
+    {reply, {text, <<"Anybody Else ?">>}, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 

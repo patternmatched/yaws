@@ -262,18 +262,9 @@ handle_info({ssl_closed, Socket},
             #state{wsstate=#ws_state{sock={ssl, Socket}}}=State) ->
     handle_abnormal_closure(State);
 
-%% In absence of frame, call periodically the callback module.
-handle_info(timeout, State) ->
-    Result = case State#state.cbtype of
-                 basic    -> basic_messages([timeout], State);
-                 advanced -> advanced_messages([timeout], State)
-             end,
-    case Result of
-        {ok, State1, Timeout} -> {noreply, State1, Timeout};
-        {stop, State1}        -> {stop, normal, State1}
-    end;
 
 %% handle info messages
+%% (Special info message: timeout)
 handle_info(Info, #state{cbinfo=CbInfo}=State) ->
     case CbInfo#cbinfo.info_fun of
         undefined ->
