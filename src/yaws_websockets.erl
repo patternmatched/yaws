@@ -428,6 +428,9 @@ do_send(#ws_state{sock=Socket, vsn=ProtoVsn}, #ws_frame{}=Frame) ->
     end.
 
 
+%% Add this clause to be compatible with previous versions.
+do_close(WSState, normal) ->
+    do_close(WSState, ?WS_STATUS_NORMAL);
 do_close(WSState, Status) when is_integer(Status) ->
     do_send(WSState, {close, <<Status:16/big>>});
 do_close(WSState, {Status,Reason}) when is_integer(Status), is_binary(Reason) ->
