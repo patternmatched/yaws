@@ -16,7 +16,6 @@
 
 -include_lib("kernel/include/file.hrl").
 
--define(MAX_PAYLOAD, 16*1024*1024). % 16MB
 
 %% RFC 6455 section 7.4.1: Defined Status Codes
 -define(WS_STATUS_NORMAL,           1000).
@@ -34,6 +33,9 @@
                 cbstate,
                 cbtype,
                 timeout=infinity,
+                wait_pong_frame=false,
+                close_frame_received=false,
+                close_timer,
                 reason=normal}).
 
 -record(cbinfo, {module,
@@ -75,8 +77,8 @@ start(Arg, CallbackMod, Opts) ->
             deliver_xxx(Arg#arg.clisock, 400),
             exit(normal)
     end,
-    {origin, OriginOpt} = lists:keyfind(origin, 1, PrepdOpts),
-    Origin = get_origin_header(Arg#arg.headers),
+    OriginOpt = get_opts(origin, PrepdOpts),
+    Origin    = get_origin_header(Arg#arg.headers),
     case check_origin(Origin, OriginOpt) of
         ok ->
             ok;
@@ -135,15 +137,23 @@ send(Pid, #ws_frame{}=Frame) ->
 %% gen_server functions
 %%%----------------------------------------------------------------------
 init([Arg, CbMod, Opts]) ->
-    {mask_frames, Bool} = lists:keyfind(mask_frames, 1, Opts),
-    put(mask_frames, Bool),
+    case get_opts(auto_fragment_message, Opts) of
+        true ->
+            AutoFrag = {true, get_opts(auto_fragment_threshold, Opts)},
+            put(auto_fragment_message, AutoFrag);
+        false ->
+            put(auto_fragment_message, false)
+    end,
     {CbType, FrameState, InitState} =
-        case lists:keyfind(callback, 1, Opts) of
-            {callback, {basic,    St}} -> {basic, {none, <<>>}, St};
-            {callback, {advanced, St}} -> {advanced, undefined, St};
-            _                          -> {basic, {none, <<>>}, []}
+        case get_opts(callback, Opts) of
+            {basic,    St} -> {basic, {none, <<>>}, St};
+            {advanced, St} -> {advanced, undefined, St};
+            _              -> {basic, {none, <<>>}, []}
         end,
-    {timeout, DefaultTout} = lists:keyfind(timeout, 1, Opts),
+    KeepAliveTout = case get_opts(keepalive, Opts) of
+                        true  -> get_opts(keepalive_timeout, Opts);
+                        false -> infinity
+                    end,
     case get_callback_info(CbMod) of
         {ok, #cbinfo{init_fun=undefined}=CbInfo} ->
             {ok, #state{arg     = Arg,
@@ -151,7 +161,7 @@ init([Arg, CbMod, Opts]) ->
                         cbinfo  = CbInfo,
                         cbtype  = CbType,
                         cbstate = {FrameState,InitState},
-                        timeout = DefaultTout}, DefaultTout};
+                        timeout = KeepAliveTout}, KeepAliveTout};
         {ok, #cbinfo{init_fun=InitFun}=CbInfo} ->
             case CbMod:InitFun([Arg, InitState]) of
                 {ok, InitState1} ->
@@ -160,14 +170,14 @@ init([Arg, CbMod, Opts]) ->
                                 cbinfo  = CbInfo,
                                 cbtype  = CbType,
                                 cbstate = {FrameState,InitState1},
-                                timeout = DefaultTout}, DefaultTout};
+                                timeout = KeepAliveTout}, KeepAliveTout};
                 {ok, InitState1, Timeout} ->
                     {ok, #state{arg     = Arg,
                                 opts    = Opts,
                                 cbinfo  = CbInfo,
                                 cbtype  = CbType,
                                 cbstate = {FrameState,InitState1},
-                                timeout = DefaultTout}, Timeout};
+                                timeout = KeepAliveTout}, Timeout};
                 {error, Reason} ->
                     {stop, Reason}
             end;
@@ -263,21 +273,33 @@ handle_info({ssl_closed, Socket},
     handle_abnormal_closure(State);
 
 
-%% handle info messages
-%% (Special info message: timeout)
-handle_info(Info, #state{cbinfo=CbInfo}=State) ->
-    case CbInfo#cbinfo.info_fun of
-        undefined ->
-            {noreply, State, State#state.timeout};
-        InfoFun ->
-            {_, CbState} = State#state.cbstate,
-            CbMod = CbInfo#cbinfo.module,
-            Res   = CbMod:InfoFun(Info, CbState),
-            case handle_callback_result(Res, State) of
-                {ok, State1, Timeout} -> {noreply, State1, Timeout};
-                {stop, State1}        -> {stop, normal, State1}
-            end
-    end.
+%% Keepalive timeout: send a ping frame and wait for any reply
+handle_info(timeout, #state{wait_pong_frame=false}=State) ->
+    error_logger:info_msg("Send ping frame", []),
+    GracePeriod = get_opts(keepalive_grace_period, State#state.opts),
+    do_send(State#state.wsstate, {ping, <<>>}),
+    {noreply, State#state{wait_pong_frame=true}, GracePeriod};
+
+%% Grace period timeout
+handle_info(timeout, #state{wait_pong_frame=true}=State) ->
+    error_logger:info_msg("endpoint gone away !", []),
+    State1 = State#state{wait_pong_frame=false},
+    case get_opts(drop_on_timeout, State1#state.opts) of
+        true  -> handle_abnormal_closure(State1);
+        false -> handle_callback_info(timeout, State1)
+    end;
+
+%% Close timeout: just shutdown the gen_server
+handle_info(close, State) ->
+    case State#state.close_timer of
+        undefined -> ok;
+        TRef      -> erlang:cancel_timer(TRef)
+    end,
+    {stop, normal, State};
+
+%% All other messages
+handle_info(Info, State) ->
+    handle_callback_info(Info, State).
 
 
 %% ----
@@ -362,13 +384,25 @@ preprocess_opts(GivenOpts) ->
                   end
           end,
     Defaults = [
-                {origin,      any},
-                {callback,    basic},
-                {mask_frames, false},
-                {timeout,     infinity}
+                {origin,                  any},
+                {callback,                basic},
+                {max_frame_size,          16 * 1024 * 1024}, %% 16 Mo
+                {max_message_size,        16 * 1024 * 1024}, %% 16 Mo
+                {close_if_unmasked,       false},
+                {auto_fragment_message,   false},
+                {auto_fragment_threshold, 1024 * 1024},      %%  1 Mo
+                {close_timeout,           5000},             %%  5 secs
+                {keepalive,               false},
+                {keepalive_timeout,       30000},            %% 30 secs
+                {keepalive_grace_period,  2000},             %%  2 secs
+                {drop_on_timeout,         false}
                ],
     lists:foldl(Fun, GivenOpts, Defaults).
 
+
+get_opts(Key, Opts) ->
+    {Key, Value} = lists:keyfind(Key, 1, Opts),
+    Value.
 
 check_origin(_Origin, any)       -> ok;
 check_origin(Actual,  Actual )   -> ok;
@@ -414,17 +448,10 @@ do_send(WSState, Messages) when is_list(Messages) ->
     ok;
 do_send(WSState, {Type, Data}) ->
     do_send(WSState, #ws_frame{opcode=Type, payload=Data});
-do_send(#ws_state{sock=Socket, vsn=ProtoVsn}, #ws_frame{}=Frame) ->
-    %% Check if the frame must be masked or not.
-    Frame1 = case {get(mask_frames), Frame#ws_frame.masking_key} of
-                 {true, undefined} ->
-                     Frame#ws_frame{masking_key=crypto:rand_bytes(4)};
-                 _ ->
-                     Frame
-             end,
+do_send(#ws_state{sock=Socket}, #ws_frame{}=Frame) ->
     case yaws_api:get_sslsocket(Socket) of
-        {ok, SslSocket} -> ssl:send(SslSocket,  frame(ProtoVsn, Frame1));
-        undefined       -> gen_tcp:send(Socket, frame(ProtoVsn, Frame1))
+        {ok, SslSocket} -> [ssl:send(SslSocket, F)  || F <- frames(Frame)];
+        undefined       -> [gen_tcp:send(Socket, F) || F <- frames(Frame)]
     end.
 
 
@@ -456,8 +483,8 @@ deliver_xxx(CliSock, Code, Hdrs) ->
 
 
 %% ----
-handle_frames(FirstPacket, #state{wsstate=WSState}=State) ->
-    FrameInfos = unframe_active_once(WSState, FirstPacket),
+handle_frames(FirstPacket, #state{wsstate=WSState, opts=Opts}=State) ->
+    FrameInfos = unframe_active_once(WSState, FirstPacket, Opts),
     Result = case State#state.cbtype of
                  basic    -> basic_messages(FrameInfos, State);
                  advanced -> advanced_messages(FrameInfos, State)
@@ -465,10 +492,33 @@ handle_frames(FirstPacket, #state{wsstate=WSState}=State) ->
     case Result of
         {ok, State1, Timeout} ->
             Last = lists:last(FrameInfos),
-            {noreply, State1#state{wsstate=Last#ws_frame_info.ws_state},
+            {noreply, State1#state{wsstate=Last#ws_frame_info.ws_state,
+                                  wait_pong_frame=false},
              Timeout};
         {stop, State1} ->
-            {stop, normal, State1}
+            case State1#state.close_frame_received of
+                true  ->
+                    {stop, normal, State1};
+                false ->
+                    Tout = get_opts(close_timeout, State1#state.opts),
+                    TRef = erlang:send_after(Tout, self(), close),
+                    {noreply, State1#state{close_timer=TRef}}
+            end
+    end.
+
+
+handle_callback_info(Info, #state{cbinfo=CbInfo}=State) ->
+    case CbInfo#cbinfo.info_fun of
+        undefined ->
+            {noreply, State, State#state.timeout};
+        InfoFun ->
+            {_, CbState} = State#state.cbstate,
+            CbMod = CbInfo#cbinfo.module,
+            Res   = CbMod:InfoFun(Info, CbState),
+            case handle_callback_result(Res, State) of
+                {ok, State1, Timeout} -> {noreply, State1, Timeout};
+                {stop, State1}        -> {stop, normal, State1}
+            end
     end.
 
 handle_abnormal_closure(#state{wsstate=WSState}=State) ->
@@ -482,7 +532,7 @@ handle_abnormal_closure(#state{wsstate=WSState}=State) ->
                                     rsv         = 0,
                                     opcode      = close,
                                     masked      = 0,
-                                    masking_key = 0,
+                                    masking_key = <<>>,
                                     length      = 2,
                                     payload     = ClosePayload,
                                     data        = ClosePayload,
@@ -507,26 +557,10 @@ basic_messages(FrameInfos, State) ->
 
 basic_messages([], State, Tout) ->
     {ok, State, Tout};
-basic_messages([timeout|Rest],
-               #state{cbinfo=CbInfo, cbstate={_,CbState}}=State,
-               _Tout) ->
-    CbMod = CbInfo#cbinfo.module,
-    Res = case CbInfo#cbinfo.msg_fun_2 of
-              undefined ->
-                  MsgFun1 = CbInfo#cbinfo.msg_fun_1,
-                  catch CbMod:MsgFun1(timeout);
-              MsgFun2 ->
-                  catch CbMod:MsgFun2(timeout, CbState)
-          end,
-    case handle_callback_result(Res, State) of
-        {ok, State1, Tout1} -> basic_messages(Rest, State1, Tout1);
-        {stop, State1}      -> {stop, State1}
-    end;
-
 basic_messages([FrameInfo|Rest],
                #state{cbinfo=CbInfo, cbstate={FrameState,CbState}}=State,
                Tout) ->
-    case handle_message(FrameInfo, FrameState) of
+    case handle_message(FrameInfo, FrameState, State#state.opts) of
         {continue, FrameState1} ->
             basic_messages(Rest, State#state{cbstate={FrameState1,CbState}},
                            Tout);
@@ -539,11 +573,15 @@ basic_messages([FrameInfo|Rest],
                       MsgFun2 ->
                           catch CbMod:MsgFun2(Message, CbState)
                   end,
-            case handle_callback_result(Res, State) of
-                {ok, State1, Tout1} -> basic_messages(Rest, State1, Tout1);
-                {stop, State1}      -> {stop, State1}
+            IsCloseFrame = case Message of
+                               {close, _, _} -> true;
+                               _             -> false
+                           end,
+            State1 = State#state{close_frame_received=IsCloseFrame},
+            case handle_callback_result(Res, State1) of
+                {ok, State2, Tout1} -> basic_messages(Rest, State2, Tout1);
+                {stop, State2}      -> {stop , State2}
             end;
-
         {error, Reason} ->
             do_close(State#state.wsstate, Reason),
             {stop, State#state{reason=Reason}}
@@ -551,14 +589,16 @@ basic_messages([FrameInfo|Rest],
 
 
 %% unfragmented text message
-handle_message(#ws_frame_info{fin=1, opcode=text, data=Data}, {none, <<>>}) ->
+handle_message(#ws_frame_info{fin=1, opcode=text, data=Data}, {none, <<>>},
+               _Opts) ->
     case unicode:characters_to_binary(Data, utf8, utf8) of
         Data -> {message, {text, Data}};
         _    -> {error, {?WS_STATUS_INVALID_PAYLOAD, <<"invalid utf-8">>}}
     end;
 
 %% start of a fragmented text message
-handle_message(#ws_frame_info{fin=0, opcode=text, data=Data}, {none, <<>>}) ->
+handle_message(#ws_frame_info{fin=0, opcode=text, data=Data}, {none, <<>>},
+               _Opts) ->
     case unicode:characters_to_binary(Data, utf8, utf8) of
         Data ->
             {continue, {text, [Data], <<>>}};
@@ -570,10 +610,11 @@ handle_message(#ws_frame_info{fin=0, opcode=text, data=Data}, {none, <<>>}) ->
 
 %% non-final continuation of a fragmented text message
 handle_message(#ws_frame_info{fin=0, data=Data, opcode=continuation},
-               {text, Dec0, Rest0}) ->
-    Len = iolist_size(Dec0) + byte_size(Rest0) + byte_size(Data),
+               {text, Dec0, Rest0}, Opts) ->
+    MaxLen = get_opts(max_message_size, Opts),
+    Len    = iolist_size(Dec0) + byte_size(Rest0) + byte_size(Data),
     if
-        Len > ?MAX_PAYLOAD ->
+        Len > MaxLen ->
             {error, {?WS_STATUS_MSG_TOO_BIG, <<"Message too big">>}};
         true ->
             Data1 = <<Rest0/binary, Data/binary>>,
@@ -589,10 +630,11 @@ handle_message(#ws_frame_info{fin=0, data=Data, opcode=continuation},
 
 %% end of text fragmented message
 handle_message(#ws_frame_info{fin=1, opcode=continuation, data=Data},
-               {text, Dec, Rest}) ->
-    Len = iolist_size(Dec) + byte_size(Rest) + byte_size(Data),
+               {text, Dec, Rest}, Opts) ->
+    MaxLen = get_opts(max_message_size, Opts),
+    Len    = iolist_size(Dec) + byte_size(Rest) + byte_size(Data),
     if
-        Len > ?MAX_PAYLOAD ->
+        Len > MaxLen ->
             {error, {?WS_STATUS_MSG_TOO_BIG, <<"Message too big">>}};
         true ->
             Data1 = <<Rest/binary, Data/binary>>,
@@ -606,19 +648,22 @@ handle_message(#ws_frame_info{fin=1, opcode=continuation, data=Data},
     end;
 
 %% unfragmented binary message
-handle_message(#ws_frame_info{fin=1, opcode=binary, data=Data}, {none, <<>>}) ->
+handle_message(#ws_frame_info{fin=1, opcode=binary, data=Data}, {none, <<>>},
+               _Opts) ->
     {message, {binary, Data}};
 
 %% start of a fragmented binary message
-handle_message(#ws_frame_info{fin=0, opcode=binary, data=Data}, {none, <<>>}) ->
+handle_message(#ws_frame_info{fin=0, opcode=binary, data=Data}, {none, <<>>},
+               _Opts) ->
     {continue, {binary, Data}};
 
 %% non-final continuation of a fragmented binary message
 handle_message(#ws_frame_info{fin=0, data=Data, opcode=continuation},
-               {binary, FragAcc}) ->
-    Len = byte_size(FragAcc) + byte_size(Data),
+               {binary, FragAcc}, Opts) ->
+    MaxLen = get_opts(max_message_size, Opts),
+    Len    = byte_size(FragAcc) + byte_size(Data),
     if
-        Len > ?MAX_PAYLOAD ->
+        Len > MaxLen ->
             {error, {?WS_STATUS_MSG_TOO_BIG, <<"Message too big">>}};
         true ->
             {continue, {binary, <<FragAcc/binary,Data/binary>>}}
@@ -626,10 +671,11 @@ handle_message(#ws_frame_info{fin=0, data=Data, opcode=continuation},
 
 %% end of binary fragmented message
 handle_message(#ws_frame_info{fin=1, opcode=continuation, data=Data},
-               {binary, FragAcc}) ->
-    Len = byte_size(FragAcc) + byte_size(Data),
+               {binary, FragAcc}, Opts) ->
+    MaxLen = get_opts(max_message_size, Opts),
+    Len    = byte_size(FragAcc) + byte_size(Data),
     if
-        Len > ?MAX_PAYLOAD ->
+        Len > MaxLen ->
             {error, {?WS_STATUS_MSG_TOO_BIG, <<"Message too big">>}};
         true ->
             Unfragged = <<FragAcc/binary, Data/binary>>,
@@ -637,11 +683,12 @@ handle_message(#ws_frame_info{fin=1, opcode=continuation, data=Data},
     end;
 
 
-handle_message(#ws_frame_info{opcode=ping, data=Data, ws_state=WSState}, Acc) ->
+handle_message(#ws_frame_info{opcode=ping, data=Data, ws_state=WSState}, Acc,
+               _Opts) ->
     do_send(WSState, {pong, Data}),
     {continue, Acc};
 
-handle_message(#ws_frame_info{opcode=pong}, Acc) ->
+handle_message(#ws_frame_info{opcode=pong}, Acc, _Opts) ->
     %% A response to an unsolicited pong frame is not expected.
     %% http://tools.ietf.org/html/rfc6455#section-5.5.3
     {continue, Acc};
@@ -652,7 +699,7 @@ handle_message(#ws_frame_info{opcode=pong}, Acc) ->
 %% don't know.
 handle_message(#ws_frame_info{opcode=close, length=Len,
                               data=Data, ws_state=WSState},
-               _Acc) ->
+               _Acc, _Opts) ->
     Message = case Len of
                   0 -> {close, ?WS_STATUS_NORMAL, <<>>};
                   1 -> {close, ?WS_STATUS_PROTO_ERROR, <<"protocol error">>};
@@ -668,10 +715,10 @@ handle_message(#ws_frame_info{opcode=close, length=Len,
               end,
     {message, Message};
 
-handle_message(#ws_frame_info{}, _Acc) ->
+handle_message(#ws_frame_info{}, _Acc, _Opts) ->
     {error, {?WS_STATUS_PROTO_ERROR, <<"protocol error">>}};
 
-handle_message({fail_connection, Status, Msg}, _Acc) ->
+handle_message({fail_connection, Status, Msg}, _Acc, _Opts) ->
     {error, {Status, Msg}}.
 
 
@@ -687,9 +734,14 @@ advanced_messages([FrameInfo|Rest],
     CbMod   = CbInfo#cbinfo.module,
     MsgFun2 = CbInfo#cbinfo.msg_fun_2,
     Res     = (catch CbMod:MsgFun2(FrameInfo, CbState)),
-    case handle_callback_result(Res, State) of
-        {ok, State1, Tout1} -> advanced_messages(Rest, State1, Tout1);
-        {stop, State1}      -> {stop, State1}
+    IsCloseFrame = case FrameInfo of
+                       #ws_frame_info{opcode=close} -> true;
+                       _                            -> false
+                   end,
+    State1 = State#state{close_frame_received=IsCloseFrame},
+    case handle_callback_result(Res, State1) of
+        {ok, State2, Tout1} -> advanced_messages(Rest, State2, Tout1);
+        {stop, State2}      -> {stop, State2}
     end.
 
 
@@ -818,10 +870,11 @@ check_reserved_opcode(_) ->
 
 
 ws_frame_info(#ws_state{sock=Socket},
-              <<Fin:1, Rsv:3, Opcode:4, Masked:1, Len1:7, Rest/binary>>) ->
+              <<Fin:1, Rsv:3, Opcode:4, Masked:1, Len1:7, Rest/binary>>,
+              Opts) ->
     case check_control_frame(Len1, Opcode, Fin) of
         ok ->
-            case ws_frame_info_secondary(Socket, Masked, Len1, Rest) of
+            case ws_frame_info_secondary(Socket, Masked, Len1, Rest, Opts) of
                 {ws_frame_info_secondary,Length,MaskingKey,Payload,Excess} ->
                     FrameInfo = #ws_frame_info{fin=Fin,
                                                rsv=Rsv,
@@ -838,11 +891,13 @@ ws_frame_info(#ws_state{sock=Socket},
             Other
     end;
 
-ws_frame_info(WSState = #ws_state{sock=Socket}, FirstPacket) ->
-    ws_frame_info(WSState, buffer(Socket, 2, FirstPacket)).
+ws_frame_info(WSState = #ws_state{sock=Socket}, FirstPacket, Opts) ->
+    ws_frame_info(WSState, buffer(Socket, 2, FirstPacket), Opts).
 
 
-ws_frame_info_secondary(Socket, Masked, Len1, Rest) ->
+ws_frame_info_secondary(Socket, Masked, Len1, Rest, Opts) ->
+    MaxLen = get_opts(max_frame_size, Opts),
+    CloseIfUnmasked = get_opts(close_if_unmasked, Opts),
     MaskLength = case Masked of
                      0 -> 0;
                      1 -> 4
@@ -859,19 +914,23 @@ ws_frame_info_secondary(Socket, Masked, Len1, Rest) ->
                 buffer(Socket, MaskLength, Rest)
     end,
     if
-        Len > ?MAX_PAYLOAD ->
+        CloseIfUnmasked == true andalso MaskingKey == <<>> ->
+            error_logger:error_msg("Unmasked frame forbidden", []),
+            {fail_connection, ?WS_STATUS_PROTO_ERROR,
+             <<"Unmasked frame forbidden">>};
+        Len > MaxLen ->
             error_logger:error_msg(
               "Payload length ~p longer than max allowed of ~p",
-              [Len, ?MAX_PAYLOAD]
+              [Len, MaxLen]
              ),
-            {fail_connection, ?WS_STATUS_MSG_TOO_BIG, <<"Message too big">>};
+            {fail_connection, ?WS_STATUS_MSG_TOO_BIG, <<"Frame too big">>};
         true ->
             <<Payload:Len/binary, Excess/binary>> = buffer(Socket, Len, Rest2),
             {ws_frame_info_secondary, Len, MaskingKey, Payload, Excess}
     end.
 
-unframe_active_once(WSState, FirstPacket) ->
-    Frames = unframe(WSState, FirstPacket),
+unframe_active_once(WSState, FirstPacket, Opts) ->
+    Frames = unframe(WSState, FirstPacket, Opts),
     websocket_setopts(WSState, [{active, once}]),
     Frames.
 
@@ -884,21 +943,21 @@ unframe_active_once(WSState, FirstPacket) ->
 %% your socket receive buffer.
 %%
 %% -> { #ws_state, [#ws_frame_info,...,#ws_frame_info] }
-unframe(_WSState, <<>>) ->
+unframe(_WSState, <<>>, _Opts) ->
     [];
-unframe(WSState, FirstPacket) ->
-    case unframe_one(WSState, FirstPacket) of
+unframe(WSState, FirstPacket, Opts) ->
+    case unframe_one(WSState, FirstPacket, Opts) of
         {FrameInfo = #ws_frame_info{ws_state = NewWSState}, RestBin} ->
             %% Every new recursion uses the #ws_state from the calling
             %% recursion.
-            [FrameInfo | unframe(NewWSState, RestBin)];
+            [FrameInfo | unframe(NewWSState, RestBin, Opts)];
         Fail ->
             [Fail]
     end.
 
 %% -> {#ws_frame_info, RestBin} | {fail_connection, Reason}
-unframe_one(WSState, FirstPacket) ->
-    case catch ws_frame_info(WSState, FirstPacket) of
+unframe_one(WSState, FirstPacket, Opts) ->
+    case catch ws_frame_info(WSState, FirstPacket, Opts) of
         {FrameInfo = #ws_frame_info{}, RestBin} ->
             Unmasked = mask(FrameInfo#ws_frame_info.masking_key,
                             FrameInfo#ws_frame_info.payload),
@@ -1004,33 +1063,52 @@ atom_to_opcode(ping)         -> 16#9;
 atom_to_opcode(pong)         -> 16#A.
 
 
-%% The Protocol version must be a supported version and reserved bits must be 0
-frame(ProtoVsn, #ws_frame{}=Frame) when ProtoVsn == 13; ProtoVsn == 8 ->
-    Fin = case Frame#ws_frame.fin of
-              true  -> 1;
-              false -> 0
-          end,
-    Rsv = Frame#ws_frame.rsv,
-    OpCode = atom_to_opcode(Frame#ws_frame.opcode),
-    {Mask, MaskingKey} = case Frame#ws_frame.masking_key of
-                             undefined                -> {0, <<>>};
-                             K when byte_size(K) == 4 -> {1, K}
-                         end,
-    Payload = case Mask of
-                  0 -> Frame#ws_frame.payload;
-                  1 -> mask(MaskingKey, Frame#ws_frame.payload)
+frames(#ws_frame{fin=true, opcode=C, payload=Payload}=Frame) when C == text;
+                                                                  C == binary ->
+    %% try auto-fragmentation only on unfragmented data frames
+    case get(auto_fragment) of
+        {true, Sz} when byte_size(Payload) > Sz ->
+            <<Chunk:Sz/binary, Rest/binary>> = Payload,
+            [frame(#ws_frame{fin=false, opcode=C, payload=Chunk}) |
+             fragment_frame(
+               #ws_frame{fin=false, opcode=continuation, payload=Rest}, Sz
+              )];
+        _ ->
+            [frame(Frame)]
+    end;
+frames(Frame) ->
+    [frame(Frame)].
+
+
+
+frame(#ws_frame{}=Frame) ->
+    Fin     = case Frame#ws_frame.fin of
+                  true  -> 1;
+                  false -> 0
               end,
+    Rsv     = Frame#ws_frame.rsv,
+    OpCode  = atom_to_opcode(Frame#ws_frame.opcode),
+    Payload = Frame#ws_frame.payload,
     Length  = byte_size(Payload),
     if
         Length < 126 ->
-            <<Fin:1, Rsv:3, OpCode:4, Mask:1, Length:7,
-              MaskingKey/binary, Payload/binary>>;
+            <<Fin:1, Rsv:3, OpCode:4, 0:1, Length:7, Payload/binary>>;
         Length < 65536 ->
-            <<Fin:1, Rsv:3, OpCode:4, Mask:1, 126:7, Length:16,
-              MaskingKey/binary, Payload/binary>>;
+            <<Fin:1, Rsv:3, OpCode:4, 0:1, 126:7, Length:16, Payload/binary>>;
         true ->
-            <<Fin:1, Rsv:3, OpCode:4, Mask:1, 127:7, Length:64,
-              MaskingKey/binary, Payload/binary>>
+            <<Fin:1, Rsv:3, OpCode:4, 0:1, 127:7, Length:64, Payload/binary>>
+    end.
+
+
+fragment_frame(#ws_frame{payload=Payload}=Frame, Sz) ->
+    case Payload of
+        <<_:Sz/binary>> ->
+            [frame(Frame#ws_frame{fin=true})];
+        <<Chunk:Sz/binary, Rest/binary>> ->
+            [frame(Frame#ws_frame{payload=Chunk})|
+             fragment_frame(Frame#ws_frame{payload=Rest}, Sz)];
+        _ ->
+            [frame(Frame#ws_frame{fin=true})]
     end.
 
 

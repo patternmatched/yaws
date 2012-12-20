@@ -136,7 +136,6 @@
           fin = true,
           rsv = 0,
           opcode,
-          masking_key,
           payload = <<>>
          }).
 

@@ -43,18 +43,15 @@ handle_message({text, <<"say hi later">>}, State) ->
 
 handle_message({text, <<"fragmented message">>}, State) ->
     io:format("Send a message fragmented in 3 frames~n", []),
-    Frag1 = #ws_frame{fin         = false,
-                      opcode      = text,
-                      masking_key = <<"abcd">>,
-                      payload     = <<"frag1">>},
-    Frag2 = #ws_frame{fin         = false,
-                      opcode      = continuation,
-                      masking_key = <<"efgh">>,
-                      payload     = <<"frag2">>},
-    Frag3 = #ws_frame{fin         = true,
-                      opcode      = continuation,
-                      masking_key = <<"ijkl">>,
-                      payload     = <<"frag3">>},
+    Frag1 = #ws_frame{fin     = false,
+                      opcode  = text,
+                      payload = <<"frag1">>},
+    Frag2 = #ws_frame{fin     = false,
+                      opcode  = continuation,
+                      payload = <<"frag2">>},
+    Frag3 = #ws_frame{fin     = true,
+                      opcode  = continuation,
+                      payload = <<"frag3">>},
     {reply, [Frag1, Frag2, Frag3], State};
 
 handle_message({text, Msg}, #state{nb_texts=N}=State) ->
