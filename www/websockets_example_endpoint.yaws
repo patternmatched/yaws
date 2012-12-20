@@ -1,13 +1,20 @@
 <erl>
 out(A) ->
+    %% To use the extended version of the basic echo callback, add
+    %% 'extversion=true' in the query string.
     CallbackMod = case queryvar(A, "extversion") of
                       {ok, "true"} -> basic_echo_callback_extended;
                       _            -> basic_echo_callback
                   end,
-    MaskFrames  = case queryvar(A, "mask_frames") of
-                      {ok, "true"} -> true;
-                      _            -> false
-                  end,
+
+    %% To enable keepalive timer add 'keepalive=true' in the query string.
+    KeepAlive = case queryvar(A, "keepalive") of
+                    {ok, "true"} -> true;
+                    _            -> false
+                end,
+
+    %% To define a keepalive timeout value, add 'timeout=Int' in the query
+    %% string.
     Tout  = case queryvar(A, "timeout") of
                 {ok, Val} ->
                     try
@@ -22,9 +29,9 @@ out(A) ->
     %%   Opts = [{origin, any}],
     %% if you want to accept calls from any origin.
     Opts = [
-            {origin,      "http://" ++ (A#arg.headers)#headers.host},
-            {mask_frames, MaskFrames},
-            {timeout,     Tout}
+            {origin,            "http://" ++ (A#arg.headers)#headers.host},
+            {keepalive,         KeepAlive},
+            {keepalive_timeout, Tout}
            ],
     {websocket, CallbackMod, Opts}.
 </erl>
