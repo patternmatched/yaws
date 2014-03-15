@@ -1800,11 +1800,9 @@ ehtml_attrs([{check, Name, Value} | Tail]) ->
 
 value2string(Atom) when is_atom(Atom) -> atom_to_list(Atom);
 value2string(String) when is_list(String) -> String;
-value2string(Binary) when is_binary(Binary) -> Binary;
+value2string(Binary) when is_binary(Binary) -> binary_to_list(Binary); %% XXX FIX for PMT Cap
 value2string(Integer) when is_integer(Integer) -> integer_to_list(Integer);
 value2string(Float) when is_float(Float) -> float_to_list(Float).
-
-
 
 %% Tags for which we must not add extra white space.
 %% FIXME: should there be anything more in this list?
