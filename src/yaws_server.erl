@@ -1915,7 +1915,7 @@ set_auth_user(ARG, User) ->
 
 filter_auths(Auths, Req_dir) ->
     case filter_auths(Auths, Req_dir, []) of
-        [] when Req_dir =:= "/" ->
+        [] when (Req_dir =:= "/") or (Req_dir =:= ".") ->
             [];
         [] ->
             filter_auths(Auths, filename:dirname(Req_dir));

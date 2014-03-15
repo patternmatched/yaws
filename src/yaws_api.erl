@@ -1751,6 +1751,7 @@ ehtml_attrs([{Name, Value} | Tail]) when is_function(Value) ->
 ehtml_attrs([{Name, Value} | Tail]) ->
     ValueString = [$", if
                            is_atom(Value) -> atom_to_list(Value);
+                           is_binary(Value) -> binary_to_list(Value);
                            is_list(Value) -> Value;
                            is_integer(Value) -> integer_to_list(Value);
                            is_float(Value) -> float_to_list(Value)
