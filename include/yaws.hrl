@@ -109,8 +109,28 @@
           ysession_mod = yaws_session_server, % storage module for ysession
           acceptor_pool_size = 8,             % size of acceptor proc pool
 
-          mime_types_info                     % undefined | #mime_types_info{}
+          mime_types_info,                    % undefined | #mime_types_info{}
+          nslookup_pref = [inet]              % [inet | inet6]
          }).
+
+
+-ifdef(HAVE_SSL_HONOR_CIPHER_ORDER).
+-define(HONOR_CIPHER_ORDER, true).
+-else.
+-define(HONOR_CIPHER_ORDER, undefined).
+-endif.
+
+-ifdef(HAVE_SSL_CLIENT_RENEGOTIATION).
+-define(SSL_CLIENT_RENEGOTIATION, true).
+-else.
+-define(SSL_CLIENT_RENEGOTIATION, undefined).
+-endif.
+
+-ifdef(HAVE_SSL_LOG_ALERT).
+-define(SSL_LOG_ALERT, {log_alert, false}).
+-else.
+-define(SSL_LOG_ALERT, false).
+-endif.
 
 -record(ssl, {
           keyfile,
@@ -120,9 +140,13 @@
           depth = 1,
           password,
           cacertfile,
+          dhfile,
           ciphers,
           cachetimeout,
-          secure_renegotiate = false
+          secure_renegotiate = false,
+          client_renegotiation = ?SSL_CLIENT_RENEGOTIATION,
+          honor_cipher_order = ?HONOR_CIPHER_ORDER,
+          protocol_version
          }).
 
 
@@ -245,7 +269,7 @@
           tilde_allowed_scripts = [],
           index_files = ["index.yaws", "index.html", "index.php"],
           revproxy = [],
-          soptions = [{listen_opts, [{backlog, 1024}, {recbuf, 8192}]}],
+          soptions = [{listen_opts, [{backlog, 1024}]}],
           extra_cgi_vars = [],
           stats,                        % raw traffic statistics
           fcgi_app_server,              % FastCGI application server {host,port}

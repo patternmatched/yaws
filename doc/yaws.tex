@@ -34,7 +34,7 @@
 
 \usepackage[T1]{fontenc}
 \usepackage{xspace}
-\usepackage{html}
+%\usepackage{html}
 
 \makeatother
 \begin{document}
@@ -92,7 +92,7 @@ is able to handle a very large number of concurrent connections}
 \item Static content page delivery
 \item Dynamic content generation using embedded \Erlang\  code in the
 HTML pages
-\item Common Log Format traffic logs
+\item NCSA combined/XLF/ELF log format traffic logs
 \item Virtual hosting with several servers on the same IP address
 \item Multiple servers on multiple IP addresses
 \item HTTP tracing for debugging
@@ -193,7 +193,7 @@ Released version of \Yaws\ are available at
 
 To compile and install a \Yaws\  release
 one of the prerequisites is a properly installed \Erlang\  system. \Yaws\
-runs on \Erlang\  releases OTP R8 and later. Get \Erlang\  from
+runs on \Erlang\/OTP releases R14B02 and newer. Get \Erlang\  from
 \url{http://www.erlang.org/}
 
 Compile and install is straight forward:
@@ -212,11 +212,7 @@ The \verb+make+ command will compile the \Yaws\  web server with the
 
 \item  \verb+make install+ - will install the executable called
          \verb+yaws+ in \verb+/usr/local/bin/+ and a working
-         configuration file in \verb+/etc/yaws.conf+
-
-\item  \verb+make local_install+ - will install the executable in
-         \verb+$HOME/bin+ and a working configuration file in
-         \verb+$HOME/yaws.conf+
+         configuration file in \verb+/usr/local/etc/yaws.conf+
 
 \end{itemize}
 
@@ -245,13 +241,18 @@ external requirements. A future release of \verb+rebar+ will allow you
 to create a slim release that doesn't bundle Erlang/OTP. This is not yet
 available.
 
-While developing a \Yaws\  site, it's typically most convenient to
-use the \verb+local_install+ and run \Yaws\  as a non-privileged user.
-
+While developing a \Yaws\ site, it's typically most convenient to do a
+\verb+local+ install and run \Yaws\ as a non-privileged user using
+\verb+--prefix+ option of the \verb+configure+ script:
+\begin{verbatim}
+# ./configure --prefix=/path/to/yaws && make install
+# /path/to/yaws/bin/yaws -i
+\end{verbatim}
 
 \subsection{Configure}
-Let's take a look at the config file that gets written to \verb+$HOME+ after
-a \verb+local_install+.
+Let's take a look at the config file that gets written after a \verb+local+
+install in \verb+/home/klacke/yaws/+. The file is
+\verb+/home/klacke/yaws/etc/yaws/yaws.conf+:
 
 
 \begin{figure}[h]
@@ -259,16 +260,18 @@ a \verb+local_install+.
 
 # first we have a set of globals
 
-logdir = .
-ebin_dir = /home/klacke/yaws/yaws/examples/ebin
-include_dir = /home/klacke/yaws/yaws/examples/include
+logdir = /home/klacke/yaws/var/log/yaws
+ebin_dir = /home/klacke/yaws/lib/yaws/examples/ebin
+include_dir = /home/klacke/yaws/lib/yaws/examples/include
+
+...
 
 # and then a set of servers
 
 <server localhost>
         port = 8000
         listen = 127.0.0.1
-        docroot = /home/klacke/yaws/yaws/scripts/../www
+        docroot = /home/klacke/yaws/var/yaws/www
 </server>
 
 
@@ -280,9 +283,7 @@ The configuration consists of an initial set of global
 variables that are valid for all defined servers.
 
 The only global directive we need to care about for now is the logdir.
-\Yaws\ produces a number of log files and they will---using the
-Configuration from Figure 2.1---end up in the current working
-directory.  We start \Yaws\ interactively as
+\Yaws\ produces a number of log files. We start \Yaws\ interactively as
 
 \begin{verbatim}
 # ~/bin/yaws -i
@@ -291,7 +292,7 @@ Erlang (BEAM) emulator version 5.1.2.b2 [source]
 Eshell V5.1.2.b2  (abort with ^G)
 1>
 =INFO REPORT==== 30-Oct-2002::01:38:22 ===
-Using config file /home/klacke/yaws.conf
+Using config file /home/klacke/yaws/etc/yaws/yaws.conf
 =INFO REPORT==== 30-Oct-2002::01:38:22 ===
 Listening to 127.0.0.1:8000 for servers ["localhost:8000"]
 
@@ -322,10 +323,10 @@ Nevertheless, our server listens to \textit{127.0.0.1:8000} and
 has the name "localhost", thus the correct URL for this server
 is \verb+http://localhost:8000+.
 
-The document root (docroot) for the server is set to the \verb+www+
-directory in the \Yaws\ source code distribution. This directory
-contains a bunch of examples and we should be able to run all those
- example now on the URL \verb+http://localhost:8000+.
+The document root (docroot) for the server is a copy of the \verb+www+ directory
+in the \Yaws\ source code distribution. This directory contains a bunch of
+examples and we should be able to run all those example now on the URL
+\verb+http://localhost:8000+.
 
 Instead of editing and adding files in the \Yaws\ \verb+www+
 directory, we create yet another server on the same IP address but a
@@ -348,7 +349,7 @@ include_dir = /home/klacke/test
 <server localhost>
         port = 8000
         listen = 127.0.0.1
-        docroot = /home/klacke/yaws/yaws/www
+        docroot = /home/klacke/yaws/var/yaws/www
 </server>
 
 <server localhost>
@@ -523,8 +524,8 @@ $Attrs = [\{HtmlAttribute, Value\}]$
 
 $HtmlAttribute = atom()$
 
-$Value = string() | atom() |
-         \{Module, Fun, [Args]\} | fun/0$
+$Value = string() | binary() | atom() | integer() | float() |\\*
+\hspace*{0.55 in} \{Module, Fun, [Args]\} | fun/0$
 
 $Body  = EHTML$
 
@@ -757,7 +758,7 @@ we pass two parameters to the \verb+arg.yaws+ page.  That data is
 URL-encoded by the browser and the server can retrieve the data by
 looking at the remainder of the URL following the '?' character.  If
 we invoke the \verb+arg.yaws+ page with the above mentioned URL we get
-as the result of \verb+yaws_parse_query/1+:
+as the result of \verb+yaws_api:parse_query/1+:
 
 $kalle = duck$
 
@@ -769,11 +770,10 @@ the list:
 [{"kalle", "duck"}, {"goofy", "unknown"}]
 \end{verbatim}
 
-Both the key and the value are strings.
-Hence, a web page can contain URLs with a
-query and thus pass data to the web server. This scheme works both
-with \verb+GET+ and \verb+POST+ requests.  It is the easiest way to
-pass data to the Web server since no form is required in the web page.
+Both the key and the value are strings. Hence, a web page can contain URLs with
+a query and thus pass data to the web server. This scheme works with any kind of
+requests. It is the easiest way to pass data to the Web server since no form is
+required in the web page.
 
 
 \subsection{Forms}
@@ -826,9 +826,8 @@ The differences between using the query part of the URL
 and a form are the following:
 
 \begin{itemize}
-\item Using the query arg only works in a \verb+GET+ request. We parse
-  the query argument with the function
-  \verb+yaws_api:parse_query(Arg)+
+\item Using the query arg works with any kind of requests. We parse the query
+  argument with the function \verb+yaws_api:parse_query(Arg)+
 
 \item If we use a form and \verb+POST+ the user data the client will
   transmit the user data in the body of the request.  That is, the
@@ -1257,6 +1256,31 @@ achieved using the following functions from the \verb+yaws_api+ module:
 
 All functions operate on instances of the \verb+#headers{}+ record type
 defined in the \verb+yaws_api.hrl+ include file.
+
+Should an arg rewrite function need to return a response for a particular
+request, it can do so by returning an \verb+#arg+ record instance with its
+\verb+state+ field set to an instance of a \verb+#rewrite_response+
+record. For example, below is an arg rewrite function that allows only
+\verb+GET+ and \verb+POST+ requests, returning a 405 \emph{Method Not
+  Allowed} for requests with any other HTTP method:
+
+\begin{verbatim}
+arg_rewrite(Arg) ->
+    Allowed = ['GET', 'POST'],
+    Req = yaws_api:arg_req(Arg),
+    Method = yaws_api:http_request_method(Req),
+    case lists:member(Method, Allowed) of
+        true ->
+            Arg;
+        false ->
+            AllowedStrs = string:join([atom_to_list(M) || M <- Allowed], ","),
+            Arg#arg{state=
+                        #rewrite_response{
+                           status=405,
+                           headers=[{header, {"Allow", AllowedStrs}},
+                                    {header, {connection, "close"}}]}}
+    end.
+\end{verbatim}
 
 \subsection{Authenticating}
 
@@ -2186,10 +2210,10 @@ part where options for each virtual host is supplied.
               \begin{itemize}
               \item \verb+report.log+ --- this is a text file that contains  all
               error logger printouts from \Yaws{}.
-              \item \verb+<Host>.access+ --- for each virtual host
-                served by \Yaws{}, a file \verb+<Host>.access+ will be
-                written which contains an access log in Common Log
-                Format.
+              \item \verb+<Host>.access+ --- for each virtual host served
+                by \Yaws{}, a file \verb+<Host>.access+ will be written
+                which contains an access log in NCSA combined/XLF/ELF log
+                format.
               \item \verb+<Host>.auth+ --- for each virtual host served by
               \Yaws{}, a file \verb+<Host>.auth+ will be written which
               contains all HTTP auth related messages.
@@ -2226,16 +2250,16 @@ part where options for each virtual host is supplied.
               configured by default.
 
 \item        \verb+id = String+ ---
-              It is possible run multiple Yaws servers on the same machine. We
+              It is possible to run multiple Yaws servers on the same machine. We
               use the id of a Yaws server to control it using the different
               control commands such as:
 \begin{verbatim}
   # /usr/local/bin/yaws --id foobar --stop
 \end{verbatim}
                To stop the Yaws server with id "foobar". Each \Yaws\ server will
-               write its internals data into a file called \$HOME/.yaws/yaws/ID
+               write its internal data into a file called \$HOME/.yaws/yaws/ID
                where ID is the identity of the server. Yaws also creates a file
-               called \${VARDIR}/run/yaws/ctl-\${ID} which contain the port
+               called \$HOME/.yaws/yaws/ID/CTL which contains the port
                number where the server is listening for control commands. The
                default id is "default".
 
@@ -2393,8 +2417,8 @@ part where options for each virtual host is supplied.
                instead of an ETS table. One of the drawbacks of the default
                \verb+yaws_session_server+ implementation is that server side
                cookies are lost when the server restarts. Specifying a different
-               module here will pass all writes/read operations to this module
-               (it must implements appropriate callbacks).
+               module here will pass all write/read operations to this module
+               (it must implement appropriate callbacks).
 
 \item        \verb+runmod = ModuleName+ ---
                At startup \Yaws\ will invoke \verb+ModuleName:start()+ in a
@@ -2420,10 +2444,31 @@ part where options for each virtual host is supplied.
               \verb+infinity+ is legal but not recommended.
 
 \item        \verb+subconfig = File+ ---
-              Load specified config file.
+              Load specified config file.  Absolute paths or relative ones to
+              the configuration location are allowed. Unix-style wildcard
+              strings can be used to include several files at once. See
+              \verb+filelib:wildcard/1+ for details. Hidden files, starting by a
+              dot, will be ignored. For example:
+
+\begin{verbatim}
+  subconfig = /etc/yaws/global.conf
+  subconfig = /etc/yaws/vhosts/*.conf
+\end{verbatim}
+
+               Or, relatively to the configuration location:
+
+\begin{verbatim}
+  subconfig = global.conf
+  subconfig = vhosts/*.conf
+\end{verbatim}
+
+            \textbf{WARNING: because of a bug in filelib:wildcard/2, wildcard
+              strings are forbidden for Erlang/OTP R15B03 and previous.}
 
 \item        \verb+subconfigdir = Directory+ ---
-              Load all config files in specified directory.
+              Load all config files found in the specified directory. The given
+              Directory can be an absolute path or relative to the configuration
+              location. Hidden files, starting by a dot, will be ignored.
 
 \item        \verb+x_forwarded_for_log_proxy_whitelist = ListOfUpstreamProxyServerIps+ ---
               \textit{This target is deprecated and will be ignored}.
@@ -2518,7 +2563,7 @@ The following directives are allowed inside a server definition.
               \item \verb+nodelay = true | false+ (default: same as \verb+inet:setopts/2+)
               \item \verb+priority = Integer+ (default: same as \verb+inet:setopts/2+)
               \item \verb+sndbuf = Integer+ (default: same as \verb+inet:setopts/2+)
-              \item \verb+recbuf = Integer+ (default: 8196)
+              \item \verb+recbuf = Integer+ (default: same as \verb+inet:setopts/2+)
               \item \verb+send_timeout = Integer | infinity+ (default: same as \verb+inet:setopts/2+)
               \item \verb+send_timeout_close = true | false+ (default: same as \verb+inet:setopts/2+)
               \end{itemize}
@@ -2526,6 +2571,14 @@ The following directives are allowed inside a server definition.
 \item        \verb+server_signature = String+ ---
               This directive sets the "Server: " output header to the custom
               value and overloads the global one for this virtual server.
+
+\item        \verb+subconfig = File+ ---
+              Same as \verb+subconfig+ directive of the global part, but here
+              files should only contain directives allowed in the server part.
+
+\item        \verb+subconfigdir = Directory+ ---
+              Same as \verb+subconfigdir+ directive of the global part, but here
+              files should only contain directives allowed in the server part.
 
 \item       \verb+rhost = Host[:Port]+ ---
              This forces all local redirects issued by the server to go to Host.
@@ -2648,8 +2701,9 @@ The following directives are allowed inside a server definition.
 
 \item       \verb+fcgi_app_server = Host:Port+ ---
              The hostname and TCP port number of a FastCGI application
-             server. The TCP port number is not optional. There is no default
-             value.
+             server. To specify an IPv6 address, put it inside square
+             brackets (ex: "[::1]:9000"). The TCP port number is not
+             optional. There is no default value.
 
 \item       \verb+fcgi_trace_protocol = true | false+ ---
              Enable or disable tracing of FastCGI protocol messages as info log
@@ -2805,7 +2859,7 @@ The following directives are allowed inside a server definition.
              Default is \verb+index_files = index.yaws index.html index.php+.
 
 \item       \verb+appmods = ListOfModuleNames+ ---
-             If any the names in \verb+ListOfModuleNames+ appear as components
+             If any of the names in \verb+ListOfModuleNames+ appear as components
              in the path for a request, the path request parsing will terminate
              and that module will be called. There is also an alternate syntax
              for specifying the appmods if we don't want our internal erlang
@@ -2885,11 +2939,11 @@ The following directives are allowed inside a server definition.
 \item       \verb+errormod_crash = Module+ ---
               It is possible to set a special module that handles the HTML
               generation of server crash messages. The default is to display the
-              entire formated crash message in the browser. This is good for
+              entire formatted crash message in the browser. This is good for
               debugging but not in production.
 
               The function \verb+Module:crashmsg(Arg, SC, Str)+ will be
-              called. The \verb+Str+ is the real crash message formated as a
+              called. The \verb+Str+ is the real crash message formatted as a
               string.
 
               The function must return, \verb+{content,MimeType,Cont}+ or
@@ -2922,7 +2976,12 @@ The following directives are allowed inside a server definition.
               It is possible to install a module that rewrites all the
               \verb+Arg+ \verb+#arg{}+ records at an early stage in the
               \Yaws\ server.  This can be used to do various things such as
-              checking a cookie, rewriting paths etc.
+              checking a cookie, rewriting paths etc. An
+              \verb+arg_rewrite_mod+ must export an \verb+arg_rewrite/1+
+              function taking and returning an \verb+#arg{}+ record. If the
+              function wants to return a response, it must set the
+              \verb+#arg.state+ field of its return value to an instance of
+              the \verb+#rewrite_response{}+ record.
 
               The module \verb+yaws_vdir+ can be used in case you want to serve
               static content that is not located in your docroot. See the
@@ -3054,6 +3113,11 @@ The following directives are allowed inside a server definition.
 \begin{verbatim}
   php_handler = <fcgi, 127.0.0.1:54321>
 \end{verbatim}
+                If you need to specify an IPv6 address, use square
+                brackets:
+\begin{verbatim}
+  php_handler = <fcgi, [::1]:54321>
+\end{verbatim}
                 The PHP interpreter needs read access to the files it
                 is to serve. Thus, if you run it in a different
                 security context than \Yaws\ itself, make sure it has
@@ -3072,7 +3136,7 @@ The following directives are allowed inside a server definition.
                 To interpret a \textit{.php} file, the function
                 \verb+Module:Function(Arg)+ will be invoked (evaluated
                 inside an rpc call if a \verb+Node+ is specified),
-                where \verb+Arg+ is a \verb+#arg{}+ record.
+                where \verb+Arg+ is an \verb+#arg{}+ record.
 
                 The function must do the same things that a normal
                 \verb+out/1+ does.
@@ -3084,7 +3148,7 @@ The following directives are allowed inside a server definition.
               \textit{this target is deprecated. use php\_handler target in
                 server part instead}.
 
-              Use this directive is same as:
+              Using this directive is the same as:
               \verb+php_handler = <fcgi, HostPortSpec>+.
 
 \item        \verb+default_type = MimeType+ ---
@@ -3112,6 +3176,13 @@ The following directives are allowed inside a server definition.
               in a server part using this directive, then it is replaced. Else
               it is kept.
 
+\item        \verb+nslookup_pref = [inet | inet6]+ ---
+              For fcgi servers and revproxy URLs, define the name
+              resolution preference. For example, to perform only IPv4
+              name resolution, use \textit{[inet]}. To do both IPv4
+              and IPv6 but try IPv6 first, use \textit{[inet6, inet]}.
+              Default value is \textit{[inet]}.
+
 \item        \verb+<ssl>  .... </ssl>+
                This begins and ends an SSL configuration for this server. It's
                possible to virthost several SSL servers on the same IP given
@@ -3135,6 +3206,12 @@ The following directives are allowed inside a server definition.
                  when attempting to build the server certificate chain. The list
                  is also used in the list of acceptable client CAs passed to the
                  client when a certificate is requested.
+
+               \item \verb+dhfile = File+ --- A file containing
+                 PEM-encoded Diffie-Hellman parameters to be used by
+                 the server if a cipher suite using Diffie-Hellman key
+                 exchange is negotiated. If not specified, default
+                 parameters are used.
 
                \item \verb+verify = 0 | 1 | 2 | verify_none | verify_peer+ ---
                  Specifies the level of verification the server does on client
@@ -3176,12 +3253,41 @@ The following directives are allowed inside a server definition.
                  horrible sub-language of its own.  It is documented in the SSL
                  man page for "ciphers".
 
-               \item \verb+secure_renegotiate = true | false+ --- Specifies if
+               \item \verb+secure_renegotiate = true | false+ --- Specifies whether
                  to reject renegotiation attempt that does not live up to RFC
                  5746. By default \verb+secure_renegotiate+ is set to false
                  i.e. secure renegotiation will be used if possible but it will
                  fallback to unsecure renegotiation if the peer does not support
                  RFC 5746.
+
+               \item \verb+client_renegotiation = true | false+ --- Enables or
+                 disables the Erlang/OTP SSL application client
+                 renegotiation option.  Defaults to true. See the
+                 \verb+ssl+ manual page at
+                 http://www.erlang.org/doc/man/ssl.html for more details.
+
+                 \textbf{WARNING: This option was introduced in the SSL application
+                   in Erlang/OTP 18.0, so \Yaws\  ignores it for previous releases.}
+
+               \item \verb+honor_cipher_order = true | false+ --- If true (the
+                 default), use the server's preference for cipher selection. If
+                 false, use the client's preference.
+
+                 \textbf{WARNING: This option was introduced in the SSL application
+                   in Erlang/OTP 17.0, so \Yaws\  ignores it for previous releases.}
+
+                 \item \verb+protocol_version = ProtocolList+ ---
+                   Specifies the list of SSL protocols that will be
+                   supported. If not set, defaults to all protocols
+                   supported by the \Erlang\  \verb+ssl+ application. For
+                   example, to support only TLS versions 1.2, 1.1, and 1:
+
+\begin{verbatim}
+protocol_version = tlsv1.2, tlsv1.1, tlsv1
+\end{verbatim}
+
+                 \textbf{WARNING: Because of a bug in previous releases,
+                   Erlang/OTP R16B01 or newer is required for this to work.}
                \end{itemize}
 
 \item       \verb+<redirect> ... </redirect>+ ---
@@ -3189,7 +3295,7 @@ The following directives are allowed inside a server definition.
               a matching pair of \verb+<redirect>+ and \verb+</redirect>+
               delimiters.
 
-              We can have a series of redirect rules in one of formats below:
+              We can have a series of redirect rules in one of the formats below:
 \begin{verbatim}
   Path = URL
   Path = code
@@ -3299,10 +3405,22 @@ The following directives are allowed inside a server definition.
                 The usage of User:Password in the actual config file is
                 deprecated as of release 1.51. It is preferred to have the users
                 in a file called \verb+.yaws_auth+ in the actual directory. The
-                \verb+.yaws_auth+ file has to be file parseable by
+                \verb+.yaws_auth+ file has to be parseable by
                 \verb+file:consult/1+.
 
-                Each row of the file must contain terms on the form.
+                Each row of the file must contain terms in this form:
+
+\begin{verbatim}
+{User, Password}.
+\end{verbatim}
+
+                where both \verb+User+ and \verb+Password+ should be
+                strings.
+
+                The \verb+.yaws_auth+ file mechanism is recursive,so any
+                subdirectories of \verb+Dir+ are also automatically
+                protected. The \verb+.yaws_auth+ file is never visible in a
+                dir listing.
 
               \item \verb+pam service = pam-service+ --- If the item \verb+pam+
                 is part of the auth structure, Yaws will also try to
@@ -3696,7 +3814,7 @@ state. It can define one, some or all of the following functions:
 \begin{verbatim}
     WSState :: #ws_state{}
     State   :: term()
-    Result  :: {ok, NewState} {error, Reason}
+    Result  :: {ok, NewState} | {error, Reason}
       NewState :: term()
       Reason   :: term()
 \end{verbatim}
@@ -3704,8 +3822,8 @@ state. It can define one, some or all of the following functions:
   If defined, this function is called when the connection is upgraded from HTTP
   to WebSocket.
 
-  \verb+WSState+ is the state of the WebSocket connection. It can be used to
-  send messages to the client using
+  \verb+WSState+ is the state of the WebSocket connection. It can be used
+  to send messages to the client using
   \verb+yaws_api:websocket_send(WSState, Message)+.
 
   \verb+State+ is the internal state of the callback module.

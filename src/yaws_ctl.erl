@@ -18,7 +18,8 @@
 
 -export([start/2, actl_trace/1]).
 -export([ls/1,hup/1,stop/1,status/1,load/1,
-         check/1,trace/1, debug_dump/1, stats/1, running_config/1]).
+         check/1,trace/1, debug_dump/1, stats/1, running_config/1,
+         configtest/1]).
 %% internal
 -export([run/1, aloop/3, handle_a/3]).
 
@@ -55,7 +56,7 @@ run(GC) ->
 rand() ->
     case os:type() of
         {win32, _} ->
-            {A1, A2, A3}=now(),
+            {A1, A2, A3}=yaws:get_time_tuple(),
             random:seed(A1, A2, A3),
             random:uniform(1 bsl 64);
         _ ->
@@ -65,7 +66,7 @@ rand() ->
             catch
                 _:_ ->
                     error_logger:warning_msg("Running without crypto app\n"),
-                    {A1, A2, A3}=now(),
+                    {A1, A2, A3}=yaws:get_time_tuple(),
                     random:seed(A1, A2, A3),
                     random:uniform(1 bsl 64)
             end
@@ -574,3 +575,17 @@ stats([SID]) ->
 running_config([SID]) ->
     actl(SID, running_config).
 
+configtest([File]) ->
+
+    Env = #env{debug = false, conf  = {file, File}},
+    case catch yaws_config:load(Env) of
+        {ok, _GC, _SCs} ->
+            io:format("Syntax OK~n"),
+            timer:sleep(100),erlang:halt(0);
+        {error, Error} ->
+            io:format("Syntax error in file ~p:~n~s~n", [File, Error]),
+            timer:sleep(100),erlang:halt(1);
+        Other ->
+            io:format("Syntax error in file ~p:~n~p~n", [File, Other]),
+            timer:sleep(100),erlang:halt(1)
+    end.

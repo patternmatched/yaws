@@ -1,6 +1,7 @@
 -module(app_test).
--include("../include/tftest.hrl").
 -compile(export_all).
+
+-include("tftest.hrl").
 
 -record(frame, {fin     = true,
                 rsv     = 0,
@@ -22,6 +23,12 @@
 -define(WS_STATUS_INVALID_PAYLOAD,  1007).
 -define(WS_STATUS_MSG_TOO_BIG,      1009).
 -define(WS_STATUS_INTERNAL_ERROR,   1011).
+
+-ifdef(HAVE_CRYPTO_HASH).
+-define(CRYPTO_HASH(V), crypto:hash(sha,V)).
+-else.
+-define(CRYPTO_HASH(V), crypto:sha(V)).
+-endif.
 
 %% Way to invoke just one test
 start([F]) ->
@@ -969,6 +976,12 @@ test_advanced_unfragmented_valid_utf8_text(BlockSz) ->
     do_test_unfragmented_valid_utf8("/websockets_autobahn_endpoint.yaws",
                                     BlockSz).
 
+-ifdef(HAVE_BAD_UNICODE).
+-define(BAD_UNICODE, true).
+-else.
+-define(BAD_UNICODE, false).
+-endif.
+
 do_test_unfragmented_valid_utf8(WSPath, BlockSz) ->
     Key = "dGhlIHNhbXBsZSBub25jZQ==",
 
@@ -997,7 +1010,12 @@ do_test_unfragmented_valid_utf8(WSPath, BlockSz) ->
     Fun(<<16#f0,16#90,16#80,16#80>>),
     Fun(<<16#7f>>),
     Fun(<<16#df,16#bf>>),
-    Fun(<<16#ef,16#bf,16#bf>>),
+
+    case ?BAD_UNICODE of
+        true  -> ok;
+        false -> Fun(<<16#ef,16#bf,16#bf>>)
+    end,
+
     Fun(<<16#f4,16#8f,16#bf,16#bf>>),
     Fun(<<16#ed,16#9f,16#bf>>),
     Fun(<<16#ee,16#80,16#80>>),
@@ -1554,9 +1572,15 @@ test_too_big_frame() ->
 
     Payload2 = <<0, Payload1/binary>>,
     SndFrame2 = #frame{opcode=?WS_OPCODE_BINARY, payload=Payload2},
-    ?line ok   = send_frame(Sock, SndFrame2, all),
+    ?line {ok, Closed} = case send_frame(Sock, SndFrame2, all) of
+                             ok -> {ok, false};
+                             {error, closed} -> {ok, true}
+                         end,
     ?line {ok, Frames} = wsflush(Sock, true),
-    ?line true = is_valid_close_frame(Frames, [?WS_STATUS_MSG_TOO_BIG]),
+    ?line true = case Closed of
+                     false -> is_valid_close_frame(Frames, [?WS_STATUS_MSG_TOO_BIG]);
+                     true -> true
+                 end,
     ?line ok   = close(Sock),
     ok.
 
@@ -1732,7 +1756,7 @@ wsflush(Sock, WithTcpClose, Acc) ->
 %% ----
 is_valid_handshake_hash(Key, Hash) ->
     Salted = Key ++ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-    HashBin = crypto:sha(Salted),
+    HashBin = ?CRYPTO_HASH(Salted),
     Hash == base64:encode_to_string(HashBin).
 
 
